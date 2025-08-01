@@ -182,7 +182,7 @@ export default function RecordScreen() {
   };
 
   const callAssemblyAI = async (audioUri: string) => {
-    const API_KEY = process.env.EXPO_ASSEMBLYAI_KEY!; // ignore the type - compiler stops throwing random problems.
+    const API_KEY = process.env.EXPO_PUBLIC_ASSEMBLYAI_KEY!; // ignore the type - compiler stops throwing random problems.
     const up = await fetch("https://api.assemblyai.com/v2/upload", {
       method: "POST",
       headers: {

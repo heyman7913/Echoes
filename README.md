@@ -14,3 +14,4 @@ npm install @supabase/supabase-js
 npm install weaviate-ts-client
 npm install axios
 npx expo install expo-av expo-speech expo-linear-gradient
+npm install react-native-gesture-handler

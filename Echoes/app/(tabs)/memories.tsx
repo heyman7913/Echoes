@@ -8,6 +8,11 @@ import {
 } from "react-native";
 import { Text, IconButton, ActivityIndicator } from "react-native-paper";
 import { supabase } from "../../supabase/client";
+import {
+  Swipeable,
+  RectButton,
+  GestureHandlerRootView,
+} from "react-native-gesture-handler";
 
 interface Memory {
   id: string;
@@ -19,14 +24,16 @@ interface Memory {
 
 export default function MemoriesScreen() {
   const [transcripts, setTranscripts] = useState<Memory[]>([]);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [refreshing, setRefreshing] = useState<boolean>(false);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
+  /** Fetch all memories for the current signed-in user */
   const fetchTranscripts = useCallback(async () => {
     setLoading(true);
-    const { data: userData } = await supabase.auth.getUser();
-    const userId = userData?.user?.id;
+
+    const { data: authData } = await supabase.auth.getUser();
+    const userId = authData?.user?.id;
 
     if (!userId) {
       setTranscripts([]);
@@ -45,14 +52,37 @@ export default function MemoriesScreen() {
     setRefreshing(false);
   }, []);
 
+  /** Run once when the screen mounts */
   useEffect(() => {
     fetchTranscripts();
-  }, []);
+  }, [fetchTranscripts]);
 
+  /** Pull-to-refresh handler */
   const onRefresh = () => {
     setRefreshing(true);
     fetchTranscripts();
   };
+
+  /** Delete a memory both remotely and locally */
+  const handleDelete = async (id: string) => {
+    await supabase.from("memories").delete().eq("id", id);
+    setTranscripts((prev) => prev.filter((m) => m.id !== id));
+    if (expandedId === id) setExpandedId(null);
+  };
+
+  /** Swipe-right delete button */
+  const renderRightActions = (id: string) => (
+    <RectButton style={styles.deleteButton} onPress={() => handleDelete(id)}>
+      <IconButton
+        icon="delete"
+        size={28}
+        iconColor="#fff"
+        style={styles.deleteIcon}
+      />
+    </RectButton>
+  );
+
+  /* ---------- render ---------- */
 
   if (loading) {
     return (
@@ -63,74 +93,96 @@ export default function MemoriesScreen() {
   }
 
   return (
-    <View style={styles.pageContainer}>
-      <View style={styles.headerWrapper}>
-        <Text style={styles.pageTitle}>Your Memories</Text>
-        <View style={styles.headerLine} />
-      </View>
-      <ScrollView
-        contentContainerStyle={styles.scrollContainer}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
-        }
-        showsVerticalScrollIndicator={false}
-      >
-        <View style={styles.centeredList}>
-          {transcripts.length === 0 ? (
-            <View style={styles.centered}>
-              <Text variant="headlineMedium">Memories</Text>
-              <Text>Your saved memories will appear here.</Text>
-            </View>
-          ) : (
-            transcripts.map((t, idx) => (
-              <View key={t.id} style={styles.memoryContainer}>
-                <TouchableOpacity
-                  onPress={() => setExpandedId(t.id)}
-                  disabled={expandedId === t.id}
-                  style={styles.memoryHeader}
-                >
-                  <View style={styles.headerRow}>
-                    <Text style={styles.heading}>Memory</Text>
-                    <Text style={styles.timestamp}>
-                      {new Date(t.created_at).toLocaleString()}
-                    </Text>
-                  </View>
-                </TouchableOpacity>
-
-                {expandedId === t.id && (
-                  <View style={styles.expandedBox}>
-                    <IconButton
-                      icon="close"
-                      size={20}
-                      style={styles.closeIcon}
-                      onPress={() => setExpandedId(null)}
-                    />
-                    <Text style={styles.transcriptTitle}>Transcript</Text>
-                    <Text style={styles.transcriptText}>{t.transcript}</Text>
-                    <Text style={styles.summaryTitle}>Summary</Text>
-                    <Text style={styles.summaryText}>
-                      AI summary will appear here.
-                    </Text>
-                  </View>
-                )}
-                {/* Divider between memories */}
-                {idx < transcripts.length - 1 && (
-                  <View style={styles.memoryDivider} />
-                )}
-              </View>
-            ))
-          )}
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <View style={styles.pageContainer}>
+        {/* Header */}
+        <View style={styles.headerWrapper}>
+          <Text style={styles.pageTitle}>Your Memories</Text>
+          <View style={styles.headerLine} />
         </View>
-      </ScrollView>
-    </View>
+
+        {/* List */}
+        <ScrollView
+          contentContainerStyle={styles.scrollContainer}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+          }
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.centeredList}>
+            {transcripts.length === 0 ? (
+              <View style={styles.centered}>
+                <Text variant="headlineMedium">Memories</Text>
+                <Text>Your saved memories will appear here.</Text>
+              </View>
+            ) : (
+              transcripts.map((t, idx) => (
+                <Swipeable
+                  key={t.id}
+                  renderRightActions={() => renderRightActions(t.id)}
+                  overshootRight={false}
+                  friction={1.5}
+                  animationOptions={{ duration: 320 }}
+                >
+                  <View style={styles.memoryContainer}>
+                    {/* Collapsed row */}
+                    <TouchableOpacity
+                      onPress={() => setExpandedId(t.id)}
+                      disabled={expandedId === t.id}
+                      style={styles.memoryHeader}
+                    >
+                      <View style={styles.headerRow}>
+                        <Text style={styles.heading}>Memory</Text>
+                        <Text style={styles.timestamp}>
+                          {new Date(t.created_at).toLocaleString()}
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
+
+                    {/* Expanded details */}
+                    {expandedId === t.id && (
+                      <View style={styles.expandedBox}>
+                        <IconButton
+                          icon="close"
+                          size={20}
+                          style={styles.closeIcon}
+                          onPress={() => setExpandedId(null)}
+                        />
+                        <Text style={styles.transcriptTitle}>Transcript</Text>
+                        <Text style={styles.transcriptText}>
+                          {t.transcript}
+                        </Text>
+
+                        <Text style={styles.summaryTitle}>Summary</Text>
+                        <Text style={styles.summaryText}>
+                          {/* Replace with real summary when you add it */}
+                          AI summary will appear here.
+                        </Text>
+                      </View>
+                    )}
+
+                    {/* Gap between cards */}
+                    {idx < transcripts.length - 1 && (
+                      <View style={styles.memoryDivider} />
+                    )}
+                  </View>
+                </Swipeable>
+              ))
+            )}
+          </View>
+        </ScrollView>
+      </View>
+    </GestureHandlerRootView>
   );
 }
+
+/* ---------- styles ---------- */
+
 const styles = StyleSheet.create({
   pageContainer: {
     flex: 1,
     backgroundColor: "#f5f5f5",
     paddingTop: 40,
-    paddingHorizontal: 0,
   },
   headerWrapper: {
     paddingHorizontal: 24,
@@ -141,9 +193,7 @@ const styles = StyleSheet.create({
     fontSize: 28,
     fontWeight: "bold",
     color: "#333",
-    textAlign: "left",
     marginBottom: 8,
-    letterSpacing: 0.5,
   },
   headerLine: {
     height: 1,
@@ -152,14 +202,12 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   scrollContainer: {
-    paddingHorizontal: 0,
     paddingBottom: 32,
     alignItems: "center",
   },
   centeredList: {
     width: "100%",
     maxWidth: 500,
-    alignSelf: "center",
     paddingHorizontal: 16,
   },
   centered: {
@@ -172,12 +220,10 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     backgroundColor: "#fff",
     borderRadius: 10,
-    overflow: "hidden",
     elevation: 2,
-    width: "100%",
-    alignSelf: "center",
     borderWidth: 1,
     borderColor: "#ececec",
+    overflow: "hidden",
   },
   memoryHeader: {
     padding: 16,
@@ -190,8 +236,8 @@ const styles = StyleSheet.create({
   heading: {
     fontSize: 16,
     fontWeight: "bold",
-    flex: 1,
     color: "#222",
+    flex: 1,
   },
   timestamp: {
     fontSize: 12,
@@ -209,7 +255,6 @@ const styles = StyleSheet.create({
     position: "absolute",
     top: 4,
     right: 4,
-    zIndex: 1,
   },
   transcriptTitle: {
     fontWeight: "bold",
@@ -220,9 +265,9 @@ const styles = StyleSheet.create({
   },
   transcriptText: {
     marginBottom: 12,
-    color: "#444",
     fontSize: 14,
     lineHeight: 20,
+    color: "#444",
   },
   summaryTitle: {
     fontWeight: "bold",
@@ -231,13 +276,25 @@ const styles = StyleSheet.create({
     color: "#333",
   },
   summaryText: {
-    color: "#666",
-    marginBottom: 8,
     fontSize: 13,
     fontStyle: "italic",
+    color: "#666",
+    marginBottom: 8,
   },
   memoryDivider: {
     height: 12,
-    backgroundColor: "transparent",
+  },
+  deleteButton: {
+    backgroundColor: "#ff5252",
+    justifyContent: "center",
+    alignItems: "center",
+    height: "83%",
+    paddingHorizontal: 6,
+    borderRadius: 10,
+    marginRight: 10,
+    elevation: 3,
+  },
+  deleteIcon: {
+    margin: 0,
   },
 });
