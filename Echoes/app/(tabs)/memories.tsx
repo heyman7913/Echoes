@@ -5,6 +5,8 @@ import {
   TouchableOpacity,
   StyleSheet,
   RefreshControl,
+  Modal,
+  Dimensions,
 } from "react-native";
 import { Text, IconButton, ActivityIndicator } from "react-native-paper";
 import { supabase } from "../../supabase/client";
@@ -14,11 +16,17 @@ import {
   GestureHandlerRootView,
 } from "react-native-gesture-handler";
 
+const { width, height } = Dimensions.get("window");
+
 interface Memory {
   id: string;
   created_at: string;
   transcript: string;
   summary?: string;
+  title?: string;
+  emotion?: string;
+  duration?: number;
+  day_of_week?: string;
   user_id: string;
 }
 
@@ -26,7 +34,9 @@ export default function MemoriesScreen() {
   const [transcripts, setTranscripts] = useState<Memory[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [selectedMemory, setSelectedMemory] = useState<Memory | null>(null);
+  const [modalVisible, setModalVisible] = useState(false);
+  const [isSummarizing, setIsSummarizing] = useState(false);
 
   /** Fetch all memories for the current signed-in user */
   const fetchTranscripts = useCallback(async () => {
@@ -67,7 +77,10 @@ export default function MemoriesScreen() {
   const handleDelete = async (id: string) => {
     await supabase.from("memories").delete().eq("id", id);
     setTranscripts((prev) => prev.filter((m) => m.id !== id));
-    if (expandedId === id) setExpandedId(null);
+    if (selectedMemory?.id === id) {
+      setModalVisible(false);
+      setSelectedMemory(null);
+    }
   };
 
   /** Swipe-right delete button */
@@ -81,6 +94,121 @@ export default function MemoriesScreen() {
       />
     </RectButton>
   );
+
+  /** Format duration from seconds to MM:SS */
+  const formatDuration = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  /** Get emotion color */
+  const getEmotionColor = (emotion: string) => {
+    const colors = {
+      happy: '#4CAF50',
+      excited: '#FF9800',
+      sad: '#2196F3',
+      angry: '#F44336',
+      anxious: '#9C27B0',
+      neutral: '#9E9E9E'
+    };
+    return colors[emotion as keyof typeof colors] || colors.neutral;
+  };
+
+  /** Get emotion icon */
+  const getEmotionIcon = (emotion: string) => {
+    const icons = {
+      happy: '😊',
+      excited: '🎉',
+      sad: '😢',
+      angry: '😠',
+      anxious: '😰',
+      neutral: '😐'
+    };
+    return icons[emotion as keyof typeof icons] || icons.neutral;
+  };
+
+  /** Generates a summary using Gemini API and updates Supabase */
+  const generateSummaryAndSave = async (memory: Memory) => {
+    const geminiApiKey = process.env.EXPO_PUBLIC_GOOGLE_API_KEY;
+
+    if (!geminiApiKey) {
+      console.error("Gemini API key is not set in environment variables.");
+      return;
+    }
+
+    setIsSummarizing(true);
+
+    try {
+      const prompt = `Summarize the following text, highlighting the key points in 3-4 sentences:\n\n${memory.transcript}`;
+
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${geminiApiKey}`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            contents: [{
+              parts: [{
+                text: prompt,
+              }],
+            }],
+          }),
+        }
+      );
+
+      const data = await response.json();
+
+      if (response.ok && data.candidates && data.candidates[0].content.parts[0].text) {
+        const summary = data.candidates[0].content.parts[0].text;
+        
+        // Update the memory locally and in the database
+        const { error } = await supabase
+          .from('memories')
+          .update({ summary })
+          .eq('id', memory.id);
+
+        if (error) {
+          console.error('Failed to update summary in Supabase:', error);
+        } else {
+          // Update local state to reflect the new summary
+          setTranscripts(prev => prev.map(m =>
+            m.id === memory.id ? { ...m, summary } : m
+          ));
+          setSelectedMemory(prev => prev ? { ...prev, summary } : null);
+        }
+      } else {
+        console.error("Failed to generate summary:", data);
+        setSelectedMemory(prev => prev ? { ...prev, summary: "Could not generate summary." } : null);
+      }
+    } catch (error) {
+      console.error("Error calling Gemini API:", error);
+      setSelectedMemory(prev => prev ? { ...prev, summary: "Could not generate summary." } : null);
+    } finally {
+      setIsSummarizing(false);
+    }
+  };
+
+  
+
+  /** Open memory modal */
+  const openMemoryModal = async (memory: Memory) => {
+    setSelectedMemory(memory);
+    setModalVisible(true);
+
+    // If summary is missing, generate it
+    if (!memory.summary) {
+      generateSummaryAndSave(memory);
+    }
+  };
+
+  /** Close memory modal */
+  const closeMemoryModal = () => {
+    setModalVisible(false);
+    setSelectedMemory(null);
+  };
 
   /* ---------- render ---------- */
 
@@ -116,61 +244,120 @@ export default function MemoriesScreen() {
                 <Text>Your saved memories will appear here.</Text>
               </View>
             ) : (
-              transcripts.map((t, idx) => (
+              transcripts.map((memory, idx) => (
                 <Swipeable
-                  key={t.id}
-                  renderRightActions={() => renderRightActions(t.id)}
+                  key={memory.id}
+                  renderRightActions={() => renderRightActions(memory.id)}
                   overshootRight={false}
                   friction={1.5}
                   animationOptions={{ duration: 320 }}
                 >
-                  <View style={styles.memoryContainer}>
-                    {/* Collapsed row */}
-                    <TouchableOpacity
-                      onPress={() => setExpandedId(t.id)}
-                      disabled={expandedId === t.id}
-                      style={styles.memoryHeader}
-                    >
-                      <View style={styles.headerRow}>
-                        <Text style={styles.heading}>Memory</Text>
-                        <Text style={styles.timestamp}>
-                          {new Date(t.created_at).toLocaleString()}
+                  <TouchableOpacity
+                    style={styles.memoryCard}
+                    onPress={() => openMemoryModal(memory)}
+                    activeOpacity={0.7}
+                  >
+                    <View style={styles.cardHeader}>
+                      <View style={styles.titleRow}>
+                        <Text style={styles.memoryTitle}>
+                          {memory.title || "Memory"}
                         </Text>
+                        <View style={[
+                          styles.emotionTag,
+                          { backgroundColor: getEmotionColor(memory.emotion || 'neutral') }
+                        ]}>
+                          <Text style={styles.emotionText}>
+                            {getEmotionIcon(memory.emotion || 'neutral')}
+                          </Text>
+                        </View>
                       </View>
-                    </TouchableOpacity>
 
-                    {/* Expanded details */}
-                    {expandedId === t.id && (
-                      <View style={styles.expandedBox}>
-                        <IconButton
-                          icon="close"
-                          size={20}
-                          style={styles.closeIcon}
-                          onPress={() => setExpandedId(null)}
-                        />
-                        <Text style={styles.transcriptTitle}>Transcript</Text>
-                        <Text style={styles.transcriptText}>
-                          {t.transcript}
+                      <View style={styles.metaRow}>
+                        <Text style={styles.dateText}>
+                          {new Date(memory.created_at).toLocaleDateString()} • {memory.day_of_week}
                         </Text>
-
-                        <Text style={styles.summaryTitle}>Summary</Text>
-                        <Text style={styles.summaryText}>
-                          {/* Replace with real summary when you add it */}
-                          AI summary will appear here.
-                        </Text>
+                        {memory.duration && (
+                          <Text style={styles.durationText}>
+                            {formatDuration(memory.duration)}
+                          </Text>
+                        )}
                       </View>
-                    )}
-
-                    {/* Gap between cards */}
-                    {idx < transcripts.length - 1 && (
-                      <View style={styles.memoryDivider} />
-                    )}
-                  </View>
+                    </View>
+                  </TouchableOpacity>
                 </Swipeable>
               ))
             )}
           </View>
         </ScrollView>
+
+        {/* Memory Detail Modal */}
+        <Modal
+          animationType="slide"
+          transparent={true}
+          visible={modalVisible}
+          onRequestClose={closeMemoryModal}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalContent}>
+              {selectedMemory && (
+                <>
+                  {/* Modal Header */}
+                  <View style={styles.modalHeader}>
+                    <View style={styles.modalTitleRow}>
+                      <Text style={styles.modalTitle}>
+                        {selectedMemory.title || "Memory"}
+                      </Text>
+                      <TouchableOpacity onPress={closeMemoryModal}>
+                        <IconButton icon="close" size={24} />
+                      </TouchableOpacity>
+                    </View>
+
+                    <View style={styles.modalMeta}>
+                      <Text style={styles.modalDate}>
+                        {new Date(selectedMemory.created_at).toLocaleDateString()} • {selectedMemory.day_of_week}
+                      </Text>
+                      {selectedMemory.duration && (
+                        <Text style={styles.modalDuration}>
+                          Duration: {formatDuration(selectedMemory.duration)}
+                        </Text>
+                      )}
+                    </View>
+
+                    <View style={[
+                      styles.modalEmotionTag,
+                      { backgroundColor: getEmotionColor(selectedMemory.emotion || 'neutral') }
+                    ]}>
+                      <Text style={styles.modalEmotionText}>
+                        {getEmotionIcon(selectedMemory.emotion || 'neutral')} {selectedMemory.emotion || 'neutral'}
+                      </Text>
+                    </View>
+                  </View>
+
+                  {/* Modal Body */}
+                  <ScrollView style={styles.modalBody} showsVerticalScrollIndicator={false}>
+                    <View style={styles.section}>
+                      <Text style={styles.sectionTitle}>Summary</Text>
+                      <Text style={styles.sectionText}>
+                        {isSummarizing ? (
+                          <ActivityIndicator style={{ padding: 8 }} />
+                        ) : (
+                          selectedMemory.summary || "No summary available"
+                        )}
+                      </Text>
+                    </View>
+
+                    <View style={styles.section}>
+                      <Text style={styles.sectionTitle}>Transcript</Text>
+                      <Text style={styles.sectionText}>
+                        {selectedMemory.transcript}
+                      </Text>
+                    </View>
+                  </ScrollView>
+                </>
+              )}
+            </View>
+          </View>
+        </Modal>
       </View>
     </GestureHandlerRootView>
   );
@@ -216,7 +403,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingTop: 40,
   },
-  memoryContainer: {
+  memoryCard: {
     marginBottom: 8,
     backgroundColor: "#fff",
     borderRadius: 10,
@@ -225,64 +412,41 @@ const styles = StyleSheet.create({
     borderColor: "#ececec",
     overflow: "hidden",
   },
-  memoryHeader: {
+  cardHeader: {
     padding: 16,
   },
-  headerRow: {
+  titleRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 4,
+  },
+  memoryTitle: {
+    fontSize: 18,
+    fontWeight: "bold",
+    color: "#333",
+    flex: 1,
+  },
+  emotionTag: {
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 10,
+  },
+  emotionText: {
+    fontSize: 16,
+  },
+  metaRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
   },
-  heading: {
-    fontSize: 16,
-    fontWeight: "bold",
-    color: "#222",
-    flex: 1,
-  },
-  timestamp: {
+  dateText: {
     fontSize: 12,
     color: "#888",
-    marginLeft: 8,
   },
-  expandedBox: {
-    backgroundColor: "#f9f9f9",
-    padding: 16,
-    borderTopWidth: 1,
-    borderColor: "#eee",
-    position: "relative",
-  },
-  closeIcon: {
-    position: "absolute",
-    top: 4,
-    right: 4,
-  },
-  transcriptTitle: {
-    fontWeight: "bold",
-    marginTop: 24,
-    marginBottom: 4,
-    fontSize: 15,
-    color: "#333",
-  },
-  transcriptText: {
-    marginBottom: 12,
-    fontSize: 14,
-    lineHeight: 20,
-    color: "#444",
-  },
-  summaryTitle: {
-    fontWeight: "bold",
-    marginBottom: 4,
-    fontSize: 15,
-    color: "#333",
-  },
-  summaryText: {
-    fontSize: 13,
-    fontStyle: "italic",
-    color: "#666",
-    marginBottom: 8,
-  },
-  memoryDivider: {
-    height: 12,
+  durationText: {
+    fontSize: 12,
+    color: "#888",
   },
   deleteButton: {
     backgroundColor: "#ff5252",
@@ -296,5 +460,74 @@ const styles = StyleSheet.create({
   },
   deleteIcon: {
     margin: 0,
+  },
+  modalOverlay: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "rgba(0,0,0,0.5)",
+  },
+  modalContent: {
+    backgroundColor: "#fff",
+    borderRadius: 10,
+    width: "90%",
+    maxHeight: "80%",
+    elevation: 5,
+  },
+  modalHeader: {
+    padding: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: "#eee",
+  },
+  modalTitleRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 4,
+  },
+  modalTitle: {
+    fontSize: 22,
+    fontWeight: "bold",
+    color: "#333",
+  },
+  modalMeta: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 8,
+  },
+  modalDate: {
+    fontSize: 14,
+    color: "#888",
+  },
+  modalDuration: {
+    fontSize: 14,
+    color: "#888",
+  },
+  modalEmotionTag: {
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 10,
+    alignSelf: "flex-start",
+  },
+  modalEmotionText: {
+    fontSize: 16,
+  },
+  modalBody: {
+    padding: 16,
+  },
+  section: {
+    marginBottom: 16,
+  },
+  sectionTitle: {
+    fontWeight: "bold",
+    fontSize: 16,
+    color: "#333",
+    marginBottom: 8,
+  },
+  sectionText: {
+    fontSize: 14,
+    lineHeight: 22,
+    color: "#444",
   },
 });

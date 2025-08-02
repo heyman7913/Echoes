@@ -7,6 +7,7 @@ import {
   Animated,
   Dimensions,
   Alert,
+  ScrollView,
 } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { Audio } from "expo-av";
@@ -20,16 +21,18 @@ export default function RecordScreen() {
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
+  const [finalDuration, setFinalDuration] = useState(0);
   const [transcript, setTranscript] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
+  const [showTranscript, setShowTranscript] = useState(true);
 
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const rippleAnim = useRef(new Animated.Value(0)).current;
   const buttonScaleAnim = useRef(new Animated.Value(1)).current;
-  const timerRef = useRef<number | null>(null);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
 
   const [audioLevels, setAudioLevels] = useState<number[]>(Array(32).fill(0));
-  const audioAnalysisInterval = useRef<number | null>(null);
+  const audioAnalysisInterval = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -166,6 +169,7 @@ export default function RecordScreen() {
       setIsPaused(false);
       setIsProcessing(true);
       if (timerRef.current) clearInterval(timerRef.current);
+      setFinalDuration(recordingTime);
       await recording.stopAndUnloadAsync();
       const uri = recording.getURI();
       if (uri) {
@@ -222,16 +226,230 @@ export default function RecordScreen() {
         data: { user },
       } = await supabase.auth.getUser();
       if (!user) return Alert.alert("Error", "User not authenticated");
-      const now = new Date().toISOString();
-      const { error } = await supabase
+      
+      const now = new Date();
+      const dayOfWeek = now.toLocaleDateString('en-US', { weekday: 'long' });
+      
+      // First save with basic info, then update with AI-generated content
+      const { data, error } = await supabase
         .from("memories")
-        .insert({ user_id: user.id, transcript: text, created_at: now });
+        .insert({ 
+          user_id: user.id, 
+          transcript: text, 
+          created_at: now.toISOString(),
+          day_of_week: dayOfWeek,
+          duration: finalDuration,
+          title: "Processing...",
+          summary: "Processing...",
+          emotion: "neutral"
+        })
+        .select()
+        .single();
+      
       if (error) throw error;
+      
+      // Process AI features in background
+      processAIFeatures(data.id, text);
+      
       Alert.alert("Success", "Memory saved!");
       setTranscript("");
+      setFinalDuration(0);
     } catch (e) {
       console.error(e);
       Alert.alert("Error", "Failed to save memory");
+    }
+  };
+
+  const processAIFeatures = async (memoryId: string, transcript: string) => {
+    try {
+      // Generate summary using free API (Hugging Face)
+      const summary = await generateSummary(transcript);
+      
+      // Generate title based on summary
+      const title = await generateTitle(summary);
+      
+      // Detect emotion
+      const emotion = await detectEmotion(transcript);
+      
+      // Update the memory with AI-generated content
+      await supabase
+        .from("memories")
+        .update({ 
+          summary: summary,
+          title: title,
+          emotion: emotion
+        })
+        .eq("id", memoryId);
+        
+    } catch (error) {
+      console.error("AI processing failed:", error);
+      // Update with fallback values
+      await supabase
+        .from("memories")
+        .update({ 
+          summary: "Summary generation failed",
+          title: "Memory",
+          emotion: "neutral"
+        })
+        .eq("id", memoryId);
+    }
+  };
+
+  const generateSummary = async (text: string): Promise<string> => {
+    try {
+      // Using a free LLM API (Cohere's free tier)
+      const response = await fetch(
+        "https://api.cohere.ai/v1/summarize",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${process.env.EXPO_PUBLIC_COHERE_API_KEY || 'demo'}`,
+          },
+          body: JSON.stringify({
+            text: text,
+            length: "medium",
+            format: "paragraph",
+            model: "summarize-xlarge",
+            additional_command: "Summarize this transcript in a clear and concise way."
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const result = await response.json();
+      return result.summary || "Summary generation failed";
+    } catch (error) {
+      console.error("Summary generation error:", error);
+      
+      // Fallback: try using Hugging Face's free inference API
+      try {
+        const hfResponse = await fetch(
+          "https://api-inference.huggingface.co/models/facebook/bart-large-cnn",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              inputs: text.substring(0, 1000), // Limit text length for free API
+            }),
+          }
+        );
+
+        if (hfResponse.ok) {
+          const hfResult = await hfResponse.json();
+          return hfResult[0]?.summary_text || "Summary generated from transcript";
+        }
+      } catch (hfError) {
+        console.error("Hugging Face fallback failed:", hfError);
+      }
+      
+      // Final fallback: create a simple summary
+      const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 20);
+      if (sentences.length > 0) {
+        return sentences[0] + (sentences.length > 1 ? '. ' + sentences[1] : '') + '.';
+      }
+      
+      return "Summary generated from transcript";
+    }
+  };
+
+  const generateTitle = async (summary: string): Promise<string> => {
+    try {
+      // Generate date-based title
+      const now = new Date();
+      const day = now.getDate();
+      const month = now.toLocaleDateString('en-US', { month: 'long' });
+      const year = now.getFullYear();
+      
+      // Add ordinal suffix to day
+      const getOrdinalSuffix = (day: number) => {
+        if (day > 3 && day < 21) return 'th';
+        switch (day % 10) {
+          case 1: return 'st';
+          case 2: return 'nd';
+          case 3: return 'rd';
+          default: return 'th';
+        }
+      };
+      
+      const ordinalDay = day + getOrdinalSuffix(day);
+      return `${ordinalDay} ${month}, ${year}`;
+    } catch (error) {
+      console.error("Title generation error:", error);
+      // Fallback to simple date
+      const now = new Date();
+      return now.toLocaleDateString('en-US', { 
+        day: 'numeric', 
+        month: 'long', 
+        year: 'numeric' 
+      });
+    }
+  };
+
+  const detectEmotion = async (text: string): Promise<string> => {
+    try {
+      // Enhanced keyword-based emotion detection
+      const lowerText = text.toLowerCase();
+      
+      // Define emotion keywords with weights
+      const emotionKeywords = {
+        happy: ['happy', 'joy', 'great', 'wonderful', 'amazing', 'excellent', 'fantastic', 'love', 'loved', 'enjoy', 'enjoyed', 'fun', 'excited', 'thrilled', 'delighted', 'pleased', 'satisfied', 'content', 'blessed', 'grateful'],
+        sad: ['sad', 'depressed', 'unhappy', 'miserable', 'lonely', 'heartbroken', 'disappointed', 'upset', 'crying', 'tears', 'miss', 'missed', 'lost', 'grief', 'sorrow', 'pain', 'hurt', 'broken'],
+        angry: ['angry', 'mad', 'furious', 'rage', 'hate', 'hated', 'annoyed', 'irritated', 'frustrated', 'pissed', 'outraged', 'livid', 'fuming', 'seething', 'bitter', 'resentful'],
+        anxious: ['anxious', 'worried', 'nervous', 'scared', 'afraid', 'fear', 'fearful', 'terrified', 'panic', 'stress', 'stressed', 'overwhelmed', 'concerned', 'uneasy', 'tense', 'jittery', 'paranoid'],
+        excited: ['excited', 'amazing', 'wow', 'incredible', 'unbelievable', 'stunning', 'mind-blowing', 'awesome', 'spectacular', 'phenomenal', 'extraordinary', 'outstanding', 'brilliant', 'genius']
+      };
+      
+      // Count emotion keywords
+      const emotionScores: { [key: string]: number } = {
+        happy: 0,
+        sad: 0,
+        angry: 0,
+        anxious: 0,
+        excited: 0,
+        neutral: 0
+      };
+      
+      // Score each emotion
+      Object.entries(emotionKeywords).forEach(([emotion, keywords]) => {
+        keywords.forEach(keyword => {
+          const regex = new RegExp(`\\b${keyword}\\b`, 'gi');
+          const matches = lowerText.match(regex);
+          if (matches) {
+            emotionScores[emotion] += matches.length;
+          }
+        });
+      });
+      
+      // Find the emotion with the highest score
+      let maxScore = 0;
+      let detectedEmotion = 'neutral';
+      
+      Object.entries(emotionScores).forEach(([emotion, score]) => {
+        if (score > maxScore) {
+          maxScore = score;
+          detectedEmotion = emotion;
+        }
+      });
+      
+      // If no strong emotion detected, check for context clues
+      if (maxScore === 0) {
+        if (lowerText.includes('work') || lowerText.includes('job') || lowerText.includes('busy')) {
+          detectedEmotion = 'neutral';
+        } else if (lowerText.includes('family') || lowerText.includes('friend') || lowerText.includes('home')) {
+          detectedEmotion = 'happy';
+        }
+      }
+      
+      return detectedEmotion;
+    } catch (error) {
+      console.error("Emotion detection error:", error);
+      return "neutral";
     }
   };
 
@@ -359,8 +577,30 @@ export default function RecordScreen() {
 
       {transcript !== "" && (
         <View style={styles.transcriptContainer}>
-          <Text style={styles.transcriptTitle}>Transcript:</Text>
-          <Text style={styles.transcriptText}>{transcript}</Text>
+          <View style={styles.transcriptHeader}>
+            <Text style={styles.transcriptTitle}>Transcript:</Text>
+            <TouchableOpacity
+              style={styles.minimizeButton}
+              onPress={() => setShowTranscript(!showTranscript)}
+            >
+              <MaterialCommunityIcons
+                name={showTranscript ? "chevron-up" : "chevron-down"}
+                size={24}
+                color="#6200ee"
+              />
+            </TouchableOpacity>
+          </View>
+          
+          {showTranscript && (
+            <ScrollView 
+              style={styles.transcriptScrollView}
+              showsVerticalScrollIndicator={true}
+              nestedScrollEnabled={true}
+            >
+              <Text style={styles.transcriptText}>{transcript}</Text>
+            </ScrollView>
+          )}
+          
           <View style={styles.actionRow}>
             <TouchableOpacity
               style={styles.saveButton}
@@ -509,12 +749,24 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.1,
     shadowRadius: 2,
   },
+  transcriptHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    width: "100%",
+    marginBottom: 10,
+  },
+  minimizeButton: {
+    padding: 5,
+  },
+  transcriptScrollView: {
+    width: "100%",
+    maxHeight: 200, // Adjust as needed for scrollable height
+  },
   transcriptTitle: {
     fontSize: 18,
     fontWeight: "bold",
     color: "#333",
-    marginBottom: 10,
-    textAlign: "center",
   },
   transcriptText: {
     fontSize: 14,
