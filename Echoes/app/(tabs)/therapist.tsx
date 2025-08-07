@@ -53,12 +53,9 @@ export default function TherapistScreen() {
   /** Generate embedding for search query */
   const generateEmbedding = async (text: string): Promise<number[] | null> => {
     try {
-      console.log("🔍 Generating embedding for text:", text);
-      
       const geminiApiKey = process.env.EXPO_PUBLIC_GOOGLE_API_KEY;
       
       if (!geminiApiKey) {
-        console.error("❌ Gemini API key is not set in environment variables.");
         return null;
       }
 
@@ -84,18 +81,11 @@ export default function TherapistScreen() {
 
       if (response.ok && data.embedding && data.embedding.values) {
         const embedding = data.embedding.values;
-        console.log("✅ Generated embedding successfully");
-        console.log("📊 Embedding dimensions:", embedding.length);
-        console.log("📈 First 10 values:", embedding.slice(0, 10));
-        console.log("📉 Last 10 values:", embedding.slice(-10));
-        console.log("🔢 Embedding range - Min:", Math.min(...embedding), "Max:", Math.max(...embedding));
         return embedding;
       } else {
-        console.error("❌ Failed to generate embedding:", data);
         return null;
       }
     } catch (error) {
-      console.error("💥 Error generating embedding:", error);
       return null;
     }
   };
@@ -120,14 +110,9 @@ export default function TherapistScreen() {
       .order("created_at", { ascending: false });
 
     if (!error && data) {
-      console.log("📊 Fetched memories from database:", data.length);
-      
       // Process and normalize embeddings
       const processedMemories = data.map(memory => {
         if (memory.embedding) {
-          console.log("🔍 Raw embedding type:", typeof memory.embedding);
-          console.log("🔍 Raw embedding is array:", Array.isArray(memory.embedding));
-          
           let normalizedEmbedding = null;
           
           // Handle different embedding formats from database
@@ -135,14 +120,8 @@ export default function TherapistScreen() {
             // Already an array - check if it's the right dimension
             if (memory.embedding.length === 768) {
               normalizedEmbedding = memory.embedding;
-              console.log("✅ Embedding already correct format (768 dimensions)");
-            } else {
-              console.log("⚠️ Embedding array has wrong dimensions:", memory.embedding.length);
-              // Try to extract the first 768 values if it's larger
-              if (memory.embedding.length > 768) {
-                normalizedEmbedding = memory.embedding.slice(0, 768);
-                console.log("🔧 Truncated embedding to 768 dimensions");
-              }
+            } else if (memory.embedding.length > 768) {
+              normalizedEmbedding = memory.embedding.slice(0, 768);
             }
           } else if (typeof memory.embedding === 'string') {
             // Try to parse JSON string
@@ -150,16 +129,14 @@ export default function TherapistScreen() {
               const parsed = JSON.parse(memory.embedding);
               if (Array.isArray(parsed) && parsed.length === 768) {
                 normalizedEmbedding = parsed;
-                console.log("✅ Parsed embedding from JSON string");
               }
             } catch (e) {
-              console.log("❌ Failed to parse embedding JSON:", e);
+              // Ignore parsing errors
             }
           } else if (typeof memory.embedding === 'object' && memory.embedding.values) {
             // Handle Google Gemini embedding format
             if (Array.isArray(memory.embedding.values) && memory.embedding.values.length === 768) {
               normalizedEmbedding = memory.embedding.values;
-              console.log("✅ Extracted embedding from values property");
             }
           }
           
@@ -171,34 +148,20 @@ export default function TherapistScreen() {
         return memory;
       });
       
-      // Debug first processed memory
-      if (processedMemories.length > 0 && processedMemories[0].embedding) {
-        console.log("🔍 Processed embedding length:", processedMemories[0].embedding.length);
-        console.log("🔍 Processed embedding sample:", processedMemories[0].embedding.slice(0, 5));
-      }
-      
       setMemories(processedMemories as Memory[]);
-    } else {
-      console.error("❌ Error fetching memories:", error);
     }
     setLoading(false);
   }, []);
 
   /** Calculate cosine similarity between two vectors */
   const cosineSimilarity = (vecA: number[], vecB: number[]): number => {
-    console.log("🧮 Calculating cosine similarity");
-    console.log("📏 Query vector length:", vecA?.length, "Memory vector length:", vecB?.length);
-    
     // Ensure both are valid arrays
     if (!Array.isArray(vecA) || !Array.isArray(vecB)) {
-      console.log("❌ One or both vectors are not arrays");
       return 0;
     }
     
     // Ensure both have same dimensions (should be 768 for text-embedding-004)
     if (vecA.length !== vecB.length) {
-      console.log("❌ Vector length mismatch! Query:", vecA.length, "Memory:", vecB.length);
-      console.log("🔍 Expected dimension for text-embedding-004: 768");
       return 0;
     }
     
@@ -207,7 +170,6 @@ export default function TherapistScreen() {
     const memoryAllNumbers = vecB.every(val => typeof val === 'number' && !isNaN(val));
     
     if (!queryAllNumbers || !memoryAllNumbers) {
-      console.log("❌ Vectors contain non-numeric values");
       return 0;
     }
     
@@ -225,54 +187,31 @@ export default function TherapistScreen() {
     }
     
     if (normA === 0 || normB === 0) {
-      console.log("❌ One of the vectors has zero magnitude!");
       return 0;
     }
     
     const similarity = dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
-    console.log("🎯 Calculated similarity:", similarity.toFixed(4));
-    
     return similarity;
   };
 
   /** Perform semantic search using embeddings */
   const performSemanticSearch = (queryEmbedding: number[], memories: Memory[]): MemoryWithSimilarity[] => {
-    console.log("🔎 Starting semantic search");
-    console.log("🧠 Query embedding dimensions:", queryEmbedding.length);
-    console.log("💾 Total memories to search:", memories.length);
-    
     const memoriesWithValidEmbeddings = memories.filter(memory => {
       const hasValidEmbedding = memory.embedding && 
                                Array.isArray(memory.embedding) && 
                                memory.embedding.length === 768 && 
                                memory.embedding.every(val => typeof val === 'number');
       
-      if (!hasValidEmbedding && memory.embedding) {
-        console.log("⚠️ Memory has invalid embedding:", {
-          id: memory.id,
-          embeddingType: typeof memory.embedding,
-          isArray: Array.isArray(memory.embedding),
-          length: Array.isArray(memory.embedding) ? memory.embedding.length : 'N/A'
-        });
-      }
-      
       return hasValidEmbedding;
     });
     
-    console.log("✅ Memories with valid 768-dim embeddings:", memoriesWithValidEmbeddings.length);
-    
     if (memoriesWithValidEmbeddings.length === 0) {
-      console.log("❌ No memories with valid embeddings found");
       return [];
     }
 
     const results = memoriesWithValidEmbeddings
-      .map((memory, index) => {
-        console.log(`\n🔍 Processing memory ${index + 1}/${memoriesWithValidEmbeddings.length}`);
-        console.log("📝 Memory text preview:", memory.transcript.substring(0, 100) + "...");
-        
+      .map((memory) => {
         const similarity = cosineSimilarity(queryEmbedding, memory.embedding!);
-        console.log("🎯 Final similarity:", similarity);
         
         return {
           memory,
@@ -286,11 +225,6 @@ export default function TherapistScreen() {
         similarity: result.similarity 
       }));
 
-    console.log("\n📋 Final results summary:");
-    results.forEach((result, index) => {
-      console.log(`${index + 1}. Similarity: ${Math.round(result.similarity * 100)}% - "${result.transcript.substring(0, 50)}..."`);
-    });
-
     return results;
   };
 
@@ -300,9 +234,6 @@ export default function TherapistScreen() {
       Alert.alert("Error", "Please enter a search query");
       return;
     }
-
-    console.log("\n🚀 Starting search process");
-    console.log("🔍 Search query:", searchQuery);
 
     setIsSearching(true);
     
@@ -322,17 +253,11 @@ export default function TherapistScreen() {
         Alert.alert("Error", "Failed to process search query. Please check your internet connection and try again.");
         return;
       }
-
-      console.log("🧠 Query embedding generated successfully");
       
       // Filter memories that have embeddings
       const memoriesWithEmbeddings = memories.filter(memory => 
         memory.embedding && memory.embedding.length > 0
       );
-
-      console.log("📊 Search context:");
-      console.log("- Total memories:", memories.length);
-      console.log("- Memories with embeddings:", memoriesWithEmbeddings.length);
 
       if (memoriesWithEmbeddings.length === 0) {
         Alert.alert("No searchable memories", "Your memories don't have vector embeddings yet. New memories will be searchable.");
@@ -342,13 +267,8 @@ export default function TherapistScreen() {
       const results = performSemanticSearch(queryEmbedding, memoriesWithEmbeddings);
       
       setSearchResults(results);
-      
-      console.log("\n🎉 Search completed!");
-      console.log("📊 Results found:", results.length);
-      console.log("🏆 Top result similarity:", results.length > 0 ? Math.round(results[0].similarity * 100) + "%" : "N/A");
 
     } catch (error) {
-      console.error("💥 Search error:", error);
       Alert.alert("Error", "Search failed. Please check your internet connection and try again.");
     } finally {
       setIsSearching(false);
@@ -646,93 +566,6 @@ const styles = StyleSheet.create({
     color: "#666",
     textAlign: "center",
     lineHeight: 20,
-  },
-  jarContainer: {
-    alignItems: "center",
-    marginVertical: 24,
-  },
-  jar: {
-    width: 240,
-    height: 280,
-    borderRadius: 120,
-    borderTopLeftRadius: 40,
-    borderTopRightRadius: 40,
-    position: "relative",
-    overflow: "hidden",
-    backgroundColor: "rgba(255,255,255,0.1)",
-    borderWidth: 2,
-    borderColor: "rgba(255,255,255,0.3)",
-  },
-  jarContent: {
-    flex: 1,
-    position: "relative",
-    margin: 20,
-  },
-  emotionOrb: {
-    position: "absolute",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.2)",
-  },
-  jarRim: {
-    position: "absolute",
-    top: -2,
-    left: 20,
-    right: 20,
-    height: 20,
-    backgroundColor: "rgba(200,200,200,0.8)",
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: "rgba(150,150,150,0.5)",
-  },
-  glassReflection: {
-    position: "absolute",
-    top: 40,
-    left: 40,
-    width: 80,
-    height: 120,
-    borderRadius: 40,
-  },
-  jarLabel: {
-    marginTop: 16,
-    fontSize: 16,
-    fontWeight: "bold",
-    color: "#333",
-    textAlign: "center",
-  },
-  legendContainer: {
-    marginTop: 24,
-    width: "100%",
-  },
-  legendTitle: {
-    fontSize: 16,
-    fontWeight: "bold",
-    color: "#333",
-    marginBottom: 12,
-    textAlign: "center",
-  },
-  legendGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    justifyContent: "center",
-    gap: 12,
-  },
-  legendItem: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    marginBottom: 8,
-  },
-  legendColor: {
-    width: 16,
-    height: 16,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "rgba(0,0,0,0.1)",
-  },
-  legendText: {
-    fontSize: 12,
-    color: "#666",
-    textTransform: "capitalize",
   },
   searchExplanation: {
     marginTop: 20,
