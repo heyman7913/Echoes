@@ -29,10 +29,10 @@ export default function RecordScreen() {
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const rippleAnim = useRef(new Animated.Value(0)).current;
   const buttonScaleAnim = useRef(new Animated.Value(1)).current;
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const timerRef = useRef<number | null>(null);
 
   const [audioLevels, setAudioLevels] = useState<number[]>(Array(32).fill(0));
-  const audioAnalysisInterval = useRef<NodeJS.Timeout | null>(null);
+  const audioAnalysisInterval = useRef<number | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -73,19 +73,20 @@ export default function RecordScreen() {
       pulse();
 
       Animated.loop(
-        Animated.sequence([
-          Animated.timing(rippleAnim, {
-            toValue: 1,
-            duration: 2000,
-            useNativeDriver: true,
-          }),
-          Animated.timing(rippleAnim, {
-            toValue: 0,
-            duration: 0,
-            useNativeDriver: true,
-          }),
-        ])
-      ).start();
+          Animated.sequence([
+            Animated.timing(rippleAnim, {
+              toValue: 1,
+              duration: 2000,
+              useNativeDriver: true,
+            }),
+            Animated.timing(rippleAnim, {
+              toValue: 0,
+              duration: 0,
+              useNativeDriver: true,
+            }),
+          ])
+        ).start(); // now valid
+
     } else {
       stopRealTimeAudioAnalysis();
       pulseAnim.setValue(1);
@@ -220,6 +221,47 @@ export default function RecordScreen() {
     return result;
   };
 
+  const generateEmbedding = async (text: string): Promise<number[] | null> => {
+    try {
+      const geminiApiKey = process.env.EXPO_PUBLIC_GOOGLE_API_KEY;
+      
+      if (!geminiApiKey) {
+        console.error("Gemini API key is not set in environment variables.");
+        return null;
+      }
+
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=${geminiApiKey}`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: "models/text-embedding-004",
+            content: {
+              parts: [{
+                text: text
+              }]
+            }
+          }),
+        }
+      );
+
+      const data = await response.json();
+
+      if (response.ok && data.embedding && data.embedding.values) {
+        return data.embedding.values;
+      } else {
+        console.error("Failed to generate embedding:", data);
+        return null;
+      }
+    } catch (error) {
+      console.error("Error generating embedding:", error);
+      return null;
+    }
+  };
+
   const saveToSupabase = async (text: string) => {
     try {
       const {
@@ -230,7 +272,10 @@ export default function RecordScreen() {
       const now = new Date();
       const dayOfWeek = now.toLocaleDateString('en-US', { weekday: 'long' });
       
-      // First save with basic info, then update with AI-generated content
+      // Generate embedding for the transcript
+      const embedding = await generateEmbedding(text);
+      
+      // Save with basic info and AI-generated content
       const { data, error } = await supabase
         .from("memories")
         .insert({ 
@@ -239,17 +284,14 @@ export default function RecordScreen() {
           created_at: now.toISOString(),
           day_of_week: dayOfWeek,
           duration: finalDuration,
-          title: "Processing...",
-          summary: "Processing...",
-          emotion: "neutral"
+          title: await generateTitle(text),
+          emotion: await detectEmotion(text),
+          embedding: embedding
         })
         .select()
         .single();
       
       if (error) throw error;
-      
-      // Process AI features in background
-      processAIFeatures(data.id, text);
       
       Alert.alert("Success", "Memory saved!");
       setTranscript("");
@@ -260,105 +302,7 @@ export default function RecordScreen() {
     }
   };
 
-  const processAIFeatures = async (memoryId: string, transcript: string) => {
-    try {
-      // Generate summary using free API (Hugging Face)
-      const summary = await generateSummary(transcript);
-      
-      // Generate title based on summary
-      const title = await generateTitle(summary);
-      
-      // Detect emotion
-      const emotion = await detectEmotion(transcript);
-      
-      // Update the memory with AI-generated content
-      await supabase
-        .from("memories")
-        .update({ 
-          summary: summary,
-          title: title,
-          emotion: emotion
-        })
-        .eq("id", memoryId);
-        
-    } catch (error) {
-      console.error("AI processing failed:", error);
-      // Update with fallback values
-      await supabase
-        .from("memories")
-        .update({ 
-          summary: "Summary generation failed",
-          title: "Memory",
-          emotion: "neutral"
-        })
-        .eq("id", memoryId);
-    }
-  };
-
-  const generateSummary = async (text: string): Promise<string> => {
-    try {
-      // Using a free LLM API (Cohere's free tier)
-      const response = await fetch(
-        "https://api.cohere.ai/v1/summarize",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${process.env.EXPO_PUBLIC_COHERE_API_KEY || 'demo'}`,
-          },
-          body: JSON.stringify({
-            text: text,
-            length: "medium",
-            format: "paragraph",
-            model: "summarize-xlarge",
-            additional_command: "Summarize this transcript in a clear and concise way."
-          }),
-        }
-      );
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const result = await response.json();
-      return result.summary || "Summary generation failed";
-    } catch (error) {
-      console.error("Summary generation error:", error);
-      
-      // Fallback: try using Hugging Face's free inference API
-      try {
-        const hfResponse = await fetch(
-          "https://api-inference.huggingface.co/models/facebook/bart-large-cnn",
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              inputs: text.substring(0, 1000), // Limit text length for free API
-            }),
-          }
-        );
-
-        if (hfResponse.ok) {
-          const hfResult = await hfResponse.json();
-          return hfResult[0]?.summary_text || "Summary generated from transcript";
-        }
-      } catch (hfError) {
-        console.error("Hugging Face fallback failed:", hfError);
-      }
-      
-      // Final fallback: create a simple summary
-      const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 20);
-      if (sentences.length > 0) {
-        return sentences[0] + (sentences.length > 1 ? '. ' + sentences[1] : '') + '.';
-      }
-      
-      return "Summary generated from transcript";
-    }
-  };
-
-  const generateTitle = async (summary: string): Promise<string> => {
+  const generateTitle = async (text: string): Promise<string> => {
     try {
       // Generate date-based title
       const now = new Date();
@@ -761,7 +705,7 @@ const styles = StyleSheet.create({
   },
   transcriptScrollView: {
     width: "100%",
-    maxHeight: 200, // Adjust as needed for scrollable height
+    maxHeight: 200,
   },
   transcriptTitle: {
     fontSize: 18,
@@ -800,5 +744,5 @@ const styles = StyleSheet.create({
   discardButtonText: {
     color: "#6200ee",
     fontWeight: "bold",
-  },
+  }
 });

@@ -128,80 +128,10 @@ export default function MemoriesScreen() {
     return icons[emotion as keyof typeof icons] || icons.neutral;
   };
 
-  /** Generates a summary using Gemini API and updates Supabase */
-  const generateSummaryAndSave = async (memory: Memory) => {
-    const geminiApiKey = process.env.EXPO_PUBLIC_GOOGLE_API_KEY;
-
-    if (!geminiApiKey) {
-      console.error("Gemini API key is not set in environment variables.");
-      return;
-    }
-
-    setIsSummarizing(true);
-
-    try {
-      const prompt = `Summarize the following text, highlighting the key points in 3-4 sentences:\n\n${memory.transcript}`;
-
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${geminiApiKey}`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            contents: [{
-              parts: [{
-                text: prompt,
-              }],
-            }],
-          }),
-        }
-      );
-
-      const data = await response.json();
-
-      if (response.ok && data.candidates && data.candidates[0].content.parts[0].text) {
-        const summary = data.candidates[0].content.parts[0].text;
-        
-        // Update the memory locally and in the database
-        const { error } = await supabase
-          .from('memories')
-          .update({ summary })
-          .eq('id', memory.id);
-
-        if (error) {
-          console.error('Failed to update summary in Supabase:', error);
-        } else {
-          // Update local state to reflect the new summary
-          setTranscripts(prev => prev.map(m =>
-            m.id === memory.id ? { ...m, summary } : m
-          ));
-          setSelectedMemory(prev => prev ? { ...prev, summary } : null);
-        }
-      } else {
-        console.error("Failed to generate summary:", data);
-        setSelectedMemory(prev => prev ? { ...prev, summary: "Could not generate summary." } : null);
-      }
-    } catch (error) {
-      console.error("Error calling Gemini API:", error);
-      setSelectedMemory(prev => prev ? { ...prev, summary: "Could not generate summary." } : null);
-    } finally {
-      setIsSummarizing(false);
-    }
-  };
-
-  
-
   /** Open memory modal */
   const openMemoryModal = async (memory: Memory) => {
     setSelectedMemory(memory);
     setModalVisible(true);
-
-    // If summary is missing, generate it
-    if (!memory.summary) {
-      generateSummaryAndSave(memory);
-    }
   };
 
   /** Close memory modal */
@@ -338,11 +268,7 @@ export default function MemoriesScreen() {
                     <View style={styles.section}>
                       <Text style={styles.sectionTitle}>Summary</Text>
                       <Text style={styles.sectionText}>
-                        {isSummarizing ? (
-                          <ActivityIndicator style={{ padding: 8 }} />
-                        ) : (
-                          selectedMemory.summary || "No summary available"
-                        )}
+                        {selectedMemory.summary || "No summary available"}
                       </Text>
                     </View>
 
