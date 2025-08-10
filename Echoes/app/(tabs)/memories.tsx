@@ -41,6 +41,61 @@ export default function MemoriesScreen() {
   
   const { currentTheme } = useTheme();
 
+  const summarizeWithGemini = useCallback(async (text: string): Promise<string | null> => {
+    try {
+      const apiKey = process.env.EXPO_PUBLIC_GOOGLE_API_KEY;
+      if (!apiKey) return null;
+
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [
+              {
+                role: 'user',
+                parts: [
+                  {
+                    text:
+                      "Summarize the following diary-style transcript into 2-3 calm, compassionate sentences capturing the main feelings and topics. Avoid advice.\n\nTranscript:\n" +
+                      text,
+                  },
+                ],
+              },
+            ],
+          }),
+        }
+      );
+      const data = await res.json();
+      const textOut = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      return typeof textOut === 'string' && textOut.length > 0 ? textOut : null;
+    } catch (e) {
+      return null;
+    }
+  }, []);
+
+  const ensureSummaries = useCallback(async (mems: Memory[]) => {
+    const toSummarize = mems.filter(m => !m.summary || m.summary.trim().length === 0);
+    if (toSummarize.length === 0) return;
+    setIsSummarizing(true);
+    try {
+      for (const m of toSummarize) {
+        const summary = await summarizeWithGemini(m.transcript);
+        if (summary) {
+          // update DB
+          await supabase.from('memories').update({ summary }).eq('id', m.id);
+          // update local state
+          setTranscripts(prev => prev.map(p => (p.id === m.id ? { ...p, summary } : p)));
+          // if currently selected, update modal too
+          setSelectedMemory(prev => (prev && prev.id === m.id ? { ...prev, summary } as Memory : prev));
+        }
+      }
+    } finally {
+      setIsSummarizing(false);
+    }
+  }, [summarizeWithGemini]);
+
   /** Fetch all memories for the current signed-in user */
   const fetchTranscripts = useCallback(async () => {
     setLoading(true);
@@ -60,10 +115,15 @@ export default function MemoriesScreen() {
       .eq("user_id", userId)
       .order("created_at", { ascending: false });
 
-    if (!error && data) setTranscripts(data as Memory[]);
+    if (!error && data) {
+      const mems = data as Memory[];
+      setTranscripts(mems);
+      // kick off summaries in background
+      ensureSummaries(mems);
+    }
     setLoading(false);
     setRefreshing(false);
-  }, []);
+  }, [ensureSummaries]);
 
   /** Run once when the screen mounts */
   useEffect(() => {
@@ -155,10 +215,15 @@ export default function MemoriesScreen() {
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <View style={[styles.pageContainer, { backgroundColor: currentTheme.colors.background }]}>
+      <View style={[styles.pageContainer, { backgroundColor: currentTheme.colors.background }]}>        
         {/* Header */}
         <View style={[styles.headerWrapper, { backgroundColor: currentTheme.colors.primary }]}>
           <Text style={[styles.pageTitle, { color: currentTheme.colors.onPrimary }]}>Your Memories</Text>
+          {isSummarizing && (
+            <Text style={{ color: currentTheme.colors.onPrimary, opacity: 0.8, marginTop: 4 }}>
+              Generating summaries...
+            </Text>
+          )}
         </View>
 
         {/* List */}

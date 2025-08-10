@@ -34,6 +34,7 @@ export default function RecordScreen() {
 
   const [audioLevels, setAudioLevels] = useState<number[]>(Array(32).fill(0));
   const audioAnalysisInterval = useRef<number | null>(null);
+  const amplitudeRef = useRef(0); // 0..100 normalized loudness
   
   const { currentTheme } = useTheme();
 
@@ -56,17 +57,17 @@ export default function RecordScreen() {
       const pulse = () => {
         const avg =
           audioLevels.reduce((sum, lvl) => sum + lvl, 0) / audioLevels.length;
-        const intensity = Math.min(1.3, 1 + (avg / 100) * 0.3);
+        const intensity = Math.min(1.35, 1 + (avg / 100) * 0.35);
 
         Animated.sequence([
           Animated.timing(pulseAnim, {
             toValue: intensity,
-            duration: 200,
+            duration: 160,
             useNativeDriver: true,
           }),
           Animated.timing(pulseAnim, {
             toValue: 1,
-            duration: 200,
+            duration: 220,
             useNativeDriver: true,
           }),
         ]).start(() => {
@@ -76,19 +77,19 @@ export default function RecordScreen() {
       pulse();
 
       Animated.loop(
-          Animated.sequence([
-            Animated.timing(rippleAnim, {
-              toValue: 1,
-              duration: 2000,
-              useNativeDriver: true,
-            }),
-            Animated.timing(rippleAnim, {
-              toValue: 0,
-              duration: 0,
-              useNativeDriver: true,
-            }),
-          ])
-        ).start(); // now valid
+        Animated.sequence([
+          Animated.timing(rippleAnim, {
+            toValue: 1,
+            duration: 2000,
+            useNativeDriver: true,
+          }),
+          Animated.timing(rippleAnim, {
+            toValue: 0,
+            duration: 0,
+            useNativeDriver: true,
+          }),
+        ])
+      ).start();
 
     } else {
       stopRealTimeAudioAnalysis();
@@ -96,8 +97,21 @@ export default function RecordScreen() {
       rippleAnim.setValue(0);
       buttonScaleAnim.setValue(1);
       if (!isRecording) setAudioLevels(Array(32).fill(0));
+      amplitudeRef.current = 0;
     }
   }, [isRecording, isPaused]);
+
+  const readMeteringFromStatus = (status: any): number | null => {
+    // Try common fields used by Expo/AV for metering
+    const db = typeof status?.metering === 'number' ? status.metering
+            : typeof status?.meteringDb === 'number' ? status.meteringDb
+            : typeof status?.averagePower === 'number' ? status.averagePower
+            : null;
+    if (typeof db !== 'number') return null;
+    // Convert dB (-160..0) to 0..1
+    const norm = Math.min(1, Math.max(0, (db + 160) / 160));
+    return norm;
+  };
 
   const startRealTimeAudioAnalysis = () => {
     if (audioAnalysisInterval.current)
@@ -105,17 +119,35 @@ export default function RecordScreen() {
     audioAnalysisInterval.current = setInterval(async () => {
       if (!recording || isPaused) return;
       try {
-        await recording.getStatusAsync();
-        const levels = Array(32)
-          .fill(0)
-          .map(() => Math.max(Math.random() * 10, Math.random() * 50));
-        setAudioLevels(levels);
+        const status: any = await recording.getStatusAsync();
+        const norm = readMeteringFromStatus(status);
+        let base = amplitudeRef.current;
+        if (typeof norm === 'number') {
+          // Smooth with simple low-pass filter
+          base = base * 0.7 + norm * 0.3;
+          amplitudeRef.current = base;
+        } else {
+          // fallback synthetic variation
+          base = base * 0.9 + Math.random() * 0.1;
+          amplitudeRef.current = base;
+        }
+        const level0to100 = Math.round(amplitudeRef.current * 100);
+
+        // Create a flowing bar graph using the latest amplitude
+        setAudioLevels(prev => {
+          const next = prev.slice(1);
+          // Add a bit of variation to simulate multi-band energy
+          const variance = Math.max(5, level0to100 * 0.6);
+          next.push(Math.max(4, Math.min(95, level0to100 + (Math.random() * variance - variance / 2))));
+          return next;
+        });
       } catch {
-        setAudioLevels(
-          Array(32)
-            .fill(0)
-            .map(() => Math.random() * 60)
-        );
+        // fallback to gentle synthetic waveform
+        setAudioLevels(prev => {
+          const next = prev.slice(1);
+          next.push(Math.max(4, Math.min(95, Math.random() * 70)));
+          return next;
+        });
       }
     }, 50);
   };
@@ -132,10 +164,27 @@ export default function RecordScreen() {
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: true,
         playsInSilentModeIOS: true,
+        staysActiveInBackground: false,
       });
-      const { recording } = await Audio.Recording.createAsync(
-        Audio.RecordingOptionsPresets.HIGH_QUALITY
-      );
+      // Try enabling metering by using a custom option; fallback preset still works
+      const options: any = {
+        android: Audio.RecordingOptionsPresets.HIGH_QUALITY.android,
+        ios: {
+          ...Audio.RecordingOptionsPresets.HIGH_QUALITY.ios,
+          // Hint metering support (some SDKs respect this)
+          extension: ".m4a",
+          numberOfChannels: 1,
+          sampleRate: 44100,
+          bitRate: 128000,
+          outputFormat: (Audio as any).IOSOutputFormat?.MPEG4AAC ?? 2,
+          audioQuality: (Audio as any).IOSAudioQuality?.HIGH ?? 0,
+        },
+        web: Audio.RecordingOptionsPresets.HIGH_QUALITY.web,
+        isMeteringEnabled: true,
+        meteringEnabled: true,
+      };
+
+      const { recording } = await Audio.Recording.createAsync(options);
       setRecording(recording);
       setIsRecording(true);
       setRecordingTime(0);
@@ -408,27 +457,43 @@ export default function RecordScreen() {
     return `${m}:${sec}`;
   };
 
-  const renderWaveform = () => (
-    <View style={styles.waveformContainer}>
-      {audioLevels.map((lvl, i) => {
-        const h =
-          isRecording && !isPaused ? Math.max(3, Math.min(80, lvl)) : 12;
-        const o = isRecording && !isPaused ? Math.min(1, lvl / 60) : 0.2;
-        return (
-          <Animated.View
-            key={i}
-            style={[
-              styles.waveformBar,
-              { 
-                height: h, 
-                backgroundColor: `rgba(${currentTheme.colors.primary.replace('#', '').match(/.{1,2}/g)?.map(hex => parseInt(hex, 16)).join(',') || '98,0,238'},${o})` 
-              },
-            ]}
-          />
-        );
-      })}
-    </View>
-  );
+  const renderWaveform = () => {
+    // Color shift based on current amplitude
+    const amp = amplitudeRef.current; // 0..1
+    const hueShift = Math.round(200 + amp * 80); // blue -> purple
+    const barColor = `hsla(${hueShift}, 80%, 55%, 1)`;
+    const barLowAlpha = Math.max(0.2, amp * 0.9);
+
+    return (
+      <View style={styles.waveformContainer}>
+        {audioLevels.map((lvl, i) => {
+          const h = isRecording && !isPaused ? Math.max(3, Math.min(80, lvl)) : 12;
+          const o = isRecording && !isPaused ? Math.min(1, lvl / 90) : 0.2;
+          return (
+            <Animated.View
+              key={i}
+              style={[
+                styles.waveformBar,
+                {
+                  height: h,
+                  backgroundColor: barColor,
+                  opacity: Math.max(barLowAlpha, o),
+                },
+              ]}
+            />
+          );
+        })}
+      </View>
+    );
+  };
+
+  const gradientForAmp = () => {
+    const amp = amplitudeRef.current; // 0..1
+    // interpolate between calm ocean to energetic purple
+    if (amp < 0.33) return ["#4CC9F0", "#4895EF", "#4361EE"]; // calm blues
+    if (amp < 0.66) return ["#4361EE", "#7C3AED", "#B5179E"]; // blue->violet
+    return ["#B5179E", "#E5383B", "#FF4D6D"]; // vibrant magenta-red
+  };
 
   return (
     <View style={[styles.container, { backgroundColor: currentTheme.colors.background }]}>
@@ -439,43 +504,63 @@ export default function RecordScreen() {
           style={styles.recordButtonContainer}
           onPress={isRecording ? undefined : startRecording}
           disabled={isRecording || isProcessing}
-          activeOpacity={0.8}
+          activeOpacity={0.9}
         >
           {isRecording && (
-            <Animated.View
-              style={[
-                styles.rippleEffect,
-                {
-                  transform: [
-                    {
-                      scale: rippleAnim.interpolate({
-                        inputRange: [0, 1],
-                        outputRange: [1, 2.5],
-                      }),
-                    },
-                  ],
-                  opacity: rippleAnim.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: [0.6, 0],
-                  }),
-                },
-              ]}
-            />
+            <>
+              {/* Outer glow ring */}
+              <Animated.View
+                style={[
+                  styles.glowRing,
+                  {
+                    transform: [
+                      {
+                        scale: rippleAnim.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: [1, 2.6],
+                        }),
+                      },
+                    ],
+                    opacity: rippleAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [0.35, 0],
+                    }),
+                  },
+                ]}
+              />
+              {/* Secondary ripple for richer effect */}
+              <Animated.View
+                style={[
+                  styles.glowRing,
+                  {
+                    transform: [
+                      {
+                        scale: rippleAnim.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: [1.3, 3.0],
+                        }),
+                      },
+                    ],
+                    opacity: rippleAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [0.25, 0],
+                    }),
+                  },
+                ]}
+              />
+            </>
           )}
+
           <Animated.View
             style={[styles.recordButton, { transform: [{ scale: pulseAnim }] }]}
           >
             <LinearGradient
-              colors={
-                isRecording
-                  ? ["#ff6b6b", "#ee5a52", "#ff4444"]
-                  : [currentTheme.colors.primary, currentTheme.colors.primaryVariant, currentTheme.colors.primary]
-              }
+              colors={(isRecording ? gradientForAmp() : [currentTheme.colors.primary, currentTheme.colors.primaryVariant, currentTheme.colors.primary]) as [string, string, string]}
               style={styles.gradient}
             >
               <MaterialCommunityIcons
                 name={isRecording ? "microphone" : "microphone-outline"}
-                size={isRecording ? 45 : 40}
+                size={isRecording ? 46 : 40}
                 color="white"
               />
             </LinearGradient>
@@ -590,23 +675,27 @@ const styles = StyleSheet.create({
   },
   recordButtonContainer: {
     alignItems: "center",
+    justifyContent: "center",
   },
   recordButton: {
     width: 120,
     height: 120,
     borderRadius: 60,
-    elevation: 8,
+    elevation: 10,
     shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    overflow: 'hidden',
   },
-  rippleEffect: {
+  glowRing: {
     position: "absolute",
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-    backgroundColor: "rgba(255,107,107,0.3)",
+    width: 140,
+    height: 140,
+    borderRadius: 70,
+    backgroundColor: "#7C3AED",
+    opacity: 0.25,
+    filter: undefined as any, // native only
   },
   gradient: {
     width: "100%",

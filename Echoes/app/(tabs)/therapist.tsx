@@ -411,9 +411,7 @@ Current conversation context: The user is reaching out for support and guidance.
       {/* Header */}
       <View style={[styles.headerSection, { backgroundColor: currentTheme.colors.primary }]}>
         <Text style={[styles.headerTitle, { color: currentTheme.colors.onPrimary }]}>AI Therapist</Text>
-        <Text style={[styles.headerSubtitle, { color: currentTheme.colors.onPrimary }]}>
-          {memories.filter(m => m.embedding && m.embedding.length > 0).length} memories available for context
-        </Text>
+        {/* Removed context count subtitle */}
       </View>
 
       {/* Chat Messages */}
