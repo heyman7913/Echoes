@@ -2,9 +2,11 @@ import { Tabs, useRouter } from "expo-router";
 import { useEffect } from "react";
 import { supabase } from "../../supabase/client";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { useTheme } from "../../contexts/ThemeContext";
 
 export default function TabsLayout() {
   const router = useRouter();
+  const { currentTheme } = useTheme();
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -26,7 +28,12 @@ export default function TabsLayout() {
     <Tabs
       screenOptions={{
         headerShown: false,
-        tabBarActiveTintColor: "#6200ee",
+        tabBarActiveTintColor: currentTheme.colors.primary,
+        tabBarInactiveTintColor: currentTheme.colors.textSecondary,
+        tabBarStyle: {
+          backgroundColor: currentTheme.colors.card,
+          borderTopColor: currentTheme.colors.border,
+        },
       }}
     >
       <Tabs.Screen
@@ -35,7 +42,7 @@ export default function TabsLayout() {
           title: "Memories",
           tabBarIcon: ({ color, size }) => (
             <MaterialCommunityIcons
-              name="microphone"
+              name="book-open-page-variant"
               color={color}
               size={size}
             />
@@ -62,6 +69,19 @@ export default function TabsLayout() {
           tabBarIcon: ({ color, size }) => (
             <MaterialCommunityIcons
               name="account-heart"
+              color={color}
+              size={size}
+            />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="settings"
+        options={{
+          title: "Settings",
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons
+              name="cog"
               color={color}
               size={size}
             />

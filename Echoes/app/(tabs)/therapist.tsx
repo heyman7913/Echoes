@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   View,
   ScrollView,
@@ -7,9 +7,13 @@ import {
   TextInput,
   Dimensions,
   Alert,
+  KeyboardAvoidingView,
+  Platform,
 } from "react-native";
-import { Text, ActivityIndicator, IconButton } from "react-native-paper";
+import { Text, ActivityIndicator, IconButton, Card } from "react-native-paper";
 import { supabase } from "../../supabase/client";
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import { useTheme } from "../../contexts/ThemeContext";
 
 const { width, height } = Dimensions.get("window");
 
@@ -30,12 +34,25 @@ interface MemoryWithSimilarity extends Memory {
   similarity: number;
 }
 
+interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: Date;
+  relevantMemories?: MemoryWithSimilarity[];
+}
+
 export default function TherapistScreen() {
-  const [searchQuery, setSearchQuery] = useState("");
-  const [searchResults, setSearchResults] = useState<MemoryWithSimilarity[]>([]);
-  const [isSearching, setIsSearching] = useState(false);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [inputMessage, setInputMessage] = useState("");
+  const [isProcessing, setIsProcessing] = useState(false);
   const [memories, setMemories] = useState<Memory[]>([]);
   const [loading, setLoading] = useState(true);
+  const [showMemoryDetails, setShowMemoryDetails] = useState<{[key: string]: boolean}>({});
+  
+  const scrollViewRef = useRef<ScrollView>(null);
+  const genAI = new GoogleGenerativeAI(process.env.EXPO_PUBLIC_GOOGLE_API_KEY || "");
+  const { currentTheme } = useTheme();
 
   /** Get emotion color */
   const getEmotionColor = (emotion: string) => {
@@ -219,7 +236,8 @@ export default function TherapistScreen() {
         };
       })
       .sort((a, b) => b.similarity - a.similarity)
-      .slice(0, 20)
+      .slice(0, 5) // Get top 5 most relevant memories for context
+      .filter(result => result.similarity > 0.3) // Only include memories with reasonable similarity
       .map(result => ({ 
         ...result.memory, 
         similarity: result.similarity 
@@ -228,185 +246,317 @@ export default function TherapistScreen() {
     return results;
   };
 
-  /** Perform vector-based search */
-  const performSearch = async () => {
-    if (!searchQuery.trim()) {
-      Alert.alert("Error", "Please enter a search query");
-      return;
-    }
-
-    setIsSearching(true);
-    
+  /** Get relevant memories for the user's message */
+  const getRelevantMemories = async (userMessage: string): Promise<MemoryWithSimilarity[]> => {
     try {
-      const { data: authData } = await supabase.auth.getUser();
-      const userId = authData?.user?.id;
-
-      if (!userId) {
-        Alert.alert("Error", "User not authenticated");
-        return;
-      }
-
-      // Generate embedding for the search query
-      const queryEmbedding = await generateEmbedding(searchQuery);
+      const queryEmbedding = await generateEmbedding(userMessage);
       
       if (!queryEmbedding) {
-        Alert.alert("Error", "Failed to process search query. Please check your internet connection and try again.");
-        return;
+        return [];
       }
       
-      // Filter memories that have embeddings
       const memoriesWithEmbeddings = memories.filter(memory => 
         memory.embedding && memory.embedding.length > 0
       );
 
       if (memoriesWithEmbeddings.length === 0) {
-        Alert.alert("No searchable memories", "Your memories don't have vector embeddings yet. New memories will be searchable.");
-        return;
+        return [];
       }
 
       const results = performSemanticSearch(queryEmbedding, memoriesWithEmbeddings);
-      
-      setSearchResults(results);
-
+      return results;
     } catch (error) {
-      Alert.alert("Error", "Search failed. Please check your internet connection and try again.");
-    } finally {
-      setIsSearching(false);
+      console.error("Error getting relevant memories:", error);
+      return [];
     }
+  };
+
+  /** Generate therapist response using Gemini with RAG */
+  const generateTherapistResponse = async (userMessage: string, relevantMemories: MemoryWithSimilarity[]): Promise<string> => {
+    try {
+      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
+      // Build context from relevant memories
+      let memoryContext = "";
+      if (relevantMemories.length > 0) {
+        memoryContext = "\n\nRelevant memories from the user:\n";
+        relevantMemories.forEach((memory, index) => {
+          memoryContext += `\nMemory ${index + 1} (${Math.round(memory.similarity * 100)}% relevant):\n`;
+          memoryContext += `Date: ${new Date(memory.created_at).toLocaleDateString()}\n`;
+          memoryContext += `Emotion: ${memory.emotion || 'neutral'}\n`;
+          memoryContext += `Content: ${memory.transcript}\n`;
+          if (memory.summary) {
+            memoryContext += `Summary: ${memory.summary}\n`;
+          }
+        });
+      }
+
+      const systemPrompt = `You are a compassionate, professional AI therapist. Your role is to provide supportive, empathetic responses that help users process their thoughts and emotions. 
+
+Key guidelines:
+- Be warm, understanding, and non-judgmental
+- Ask thoughtful questions to help users explore their feelings
+- Provide gentle insights and coping strategies when appropriate
+- Reference their memories naturally when relevant to show you understand their journey
+- Maintain professional boundaries - you're supportive but not a replacement for professional therapy
+- Keep responses concise but meaningful
+- Focus on emotional support, validation, and gentle guidance
+
+The user has shared memories with you over time. Use these memories to provide more personalized, contextual support.${memoryContext}
+
+Current conversation context: The user is reaching out for support and guidance.`;
+
+      const result = await model.generateContent({
+        contents: [
+          {
+            role: "user",
+            parts: [{ text: systemPrompt + "\n\nUser message: " + userMessage }]
+          }
+        ],
+      });
+
+      const response = await result.response;
+      return response.text();
+    } catch (error) {
+      console.error("Error generating response:", error);
+      return "I apologize, but I'm having trouble processing your message right now. Please try again in a moment. Remember, I'm here to support you.";
+    }
+  };
+
+  /** Handle sending a message */
+  const handleSendMessage = async () => {
+    if (!inputMessage.trim()) return;
+
+    const userMessage: ChatMessage = {
+      id: Date.now().toString(),
+      role: 'user',
+      content: inputMessage.trim(),
+      timestamp: new Date()
+    };
+
+    setChatMessages(prev => [...prev, userMessage]);
+    setInputMessage("");
+    setIsProcessing(true);
+
+    try {
+      // Get relevant memories for RAG
+      const relevantMemories = await getRelevantMemories(userMessage.content);
+      
+      // Generate therapist response
+      const response = await generateTherapistResponse(userMessage.content, relevantMemories);
+      
+      const assistantMessage: ChatMessage = {
+        id: (Date.now() + 1).toString(),
+        role: 'assistant',
+        content: response,
+        timestamp: new Date(),
+        relevantMemories: relevantMemories.length > 0 ? relevantMemories : undefined
+      };
+
+      setChatMessages(prev => [...prev, assistantMessage]);
+    } catch (error) {
+      console.error("Error in chat:", error);
+      const errorMessage: ChatMessage = {
+        id: (Date.now() + 1).toString(),
+        role: 'assistant',
+        content: "I apologize, but I encountered an error while processing your message. Please try again.",
+        timestamp: new Date()
+      };
+      setChatMessages(prev => [...prev, errorMessage]);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  /** Format time */
+  const formatTime = (date: Date) => {
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+
+  /** Toggle memory details visibility */
+  const toggleMemoryDetails = (messageId: string) => {
+    setShowMemoryDetails(prev => ({
+      ...prev,
+      [messageId]: !prev[messageId]
+    }));
   };
 
   useEffect(() => {
     fetchMemories();
   }, [fetchMemories]);
 
+  // Auto-scroll to bottom when new messages arrive
+  useEffect(() => {
+    if (chatMessages.length > 0) {
+      setTimeout(() => {
+        scrollViewRef.current?.scrollToEnd({ animated: true });
+      }, 100);
+    }
+  }, [chatMessages]);
+
   if (loading) {
     return (
       <View style={styles.centered}>
-        <ActivityIndicator />
+        <ActivityIndicator size="large" />
+        <Text style={{ marginTop: 16 }}>Loading your memories...</Text>
       </View>
     );
   }
 
   return (
-    <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
+    <KeyboardAvoidingView 
+      style={[styles.container, { backgroundColor: currentTheme.colors.background }]} 
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
+    >
       {/* Header */}
-      <View style={styles.headerSection}>
-        <Text style={styles.headerTitle}>AI Therapist Assistant</Text>
-        <Text style={styles.headerSubtitle}>
-          AI-powered semantic search through your memories
+      <View style={[styles.headerSection, { backgroundColor: currentTheme.colors.primary }]}>
+        <Text style={[styles.headerTitle, { color: currentTheme.colors.onPrimary }]}>AI Therapist</Text>
+        <Text style={[styles.headerSubtitle, { color: currentTheme.colors.onPrimary }]}>
+          {memories.filter(m => m.embedding && m.embedding.length > 0).length} memories available for context
         </Text>
       </View>
 
-      {/* Search Section */}
-      <View style={styles.searchSection}>
-        <Text style={styles.sectionTitle}>Semantic Memory Search</Text>
-        <Text style={styles.sectionSubtitle}>
-          Search through {memories.filter(m => m.embedding && m.embedding.length > 0).length} memories using AI-powered semantic understanding
-        </Text>
-        <View style={styles.searchContainer}>
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Describe what you're looking for... (e.g., 'feeling anxious about work' or 'happy moments with family')"
-            placeholderTextColor="#999"
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            multiline={true}
-            numberOfLines={3}
-            onSubmitEditing={performSearch}
-          />
-          <TouchableOpacity 
-            style={styles.searchButton}
-            onPress={performSearch}
-            disabled={isSearching}
-          >
-            {isSearching ? (
-              <ActivityIndicator color="#fff" size="small" />
-            ) : (
-              <IconButton icon="magnify" size={24} iconColor="#fff" />
-            )}
-          </TouchableOpacity>
-        </View>
-
-        {/* Search Results */}
-        {searchResults.length > 0 && (
-          <View style={styles.resultsContainer}>
-            <Text style={styles.resultsTitle}>
-              Showing {searchResults.length} most similar memories (ranked by relevance)
+      {/* Chat Messages */}
+      <ScrollView 
+        ref={scrollViewRef}
+        style={[styles.chatContainer, { backgroundColor: currentTheme.colors.background }]}
+        contentContainerStyle={styles.chatContent}
+        showsVerticalScrollIndicator={false}
+      >
+        {chatMessages.length === 0 ? (
+          <View style={[styles.welcomeContainer, { backgroundColor: currentTheme.colors.card }]}>
+            <Text style={[styles.welcomeTitle, { color: currentTheme.colors.text }]}>Welcome to your AI Therapist</Text>
+            <Text style={[styles.welcomeText, { color: currentTheme.colors.textSecondary }]}>
+              I'm here to provide emotional support and guidance. I have access to your memories to offer personalized insights. How are you feeling today?
             </Text>
-            {searchResults.map((result, index) => (
-              <View key={result.id} style={styles.resultCard}>
-                <View style={styles.resultHeader}>
-                  <Text style={styles.resultTitle}>
-                    {result.title || "Memory"}
-                  </Text>
-                  <View style={styles.resultMeta}>
-                    <Text style={[styles.similarityScore, {
-                      backgroundColor: result.similarity > 0.7 ? "rgba(76, 175, 80, 0.1)" : 
-                                     result.similarity > 0.4 ? "rgba(255, 152, 0, 0.1)" : 
-                                     "rgba(244, 67, 54, 0.1)",
-                      color: result.similarity > 0.7 ? "#4CAF50" : 
-                             result.similarity > 0.4 ? "#FF9800" : 
-                             "#F44336"
-                    }]}>
-                      {Math.round(result.similarity * 100)}% similar
-                    </Text>
-                    <View style={[
-                      styles.resultEmotion,
-                      { backgroundColor: getEmotionColor(result.emotion || 'neutral') }
-                    ]}>
-                      <Text style={styles.resultEmotionText}>
-                        {result.emotion || 'neutral'}
-                      </Text>
-                    </View>
-                  </View>
-                </View>
-                <Text style={styles.resultDate}>
-                  {new Date(result.created_at).toLocaleDateString()} • {result.day_of_week}
+          </View>
+        ) : (
+          chatMessages.map((message) => (
+            <View key={message.id} style={styles.messageWrapper}>
+              <View style={[
+                styles.messageBubble,
+                message.role === 'user' 
+                  ? [styles.userMessage, { backgroundColor: currentTheme.colors.primary }]
+                  : [styles.assistantMessage, { backgroundColor: currentTheme.colors.card }]
+              ]}>
+                <Text style={[
+                  styles.messageText,
+                  message.role === 'user' 
+                    ? [styles.userMessageText, { color: currentTheme.colors.onPrimary }]
+                    : [styles.assistantMessageText, { color: currentTheme.colors.text }]
+                ]}>
+                  {message.content}
                 </Text>
-                <Text style={styles.resultText} numberOfLines={4}>
-                  {result.transcript}
+                <Text style={[
+                  styles.messageTime,
+                  message.role === 'user' 
+                    ? [styles.userMessageTime, { color: currentTheme.colors.onPrimary + '99' }]
+                    : [styles.assistantMessageTime, { color: currentTheme.colors.textSecondary }]
+                ]}>
+                  {formatTime(message.timestamp)}
                 </Text>
-                {result.duration && (
-                  <Text style={styles.resultDuration}>
-                    Duration: {Math.floor(result.duration / 60)}:{String(result.duration % 60).padStart(2, '0')}
-                  </Text>
-                )}
               </View>
-            ))}
-            
-            <View style={styles.searchExplanation}>
-              <Text style={styles.explanationTitle}>How it works:</Text>
-              <Text style={styles.explanationText}>
-                • AI converts your search into a vector representation{'\n'}
-                • Compares against all memory vectors using cosine similarity{'\n'}
-                • Results ranked by semantic similarity, not exact word matching{'\n'}
-                • Higher percentages = more conceptually similar content
-              </Text>
+
+              {/* Show relevant memories for assistant messages */}
+              {message.role === 'assistant' && message.relevantMemories && message.relevantMemories.length > 0 && (
+                <View style={styles.memoriesSection}>
+                  <TouchableOpacity 
+                    style={[styles.memoriesHeader, { backgroundColor: currentTheme.colors.primary + '0D' }]}
+                    onPress={() => toggleMemoryDetails(message.id)}
+                  >
+                    <Text style={[styles.memoriesTitle, { color: currentTheme.colors.primary }]}>
+                      Referenced {message.relevantMemories.length} relevant memories
+                    </Text>
+                    <IconButton 
+                      icon={showMemoryDetails[message.id] ? "chevron-up" : "chevron-down"} 
+                      size={20}
+                      iconColor={currentTheme.colors.primary}
+                    />
+                  </TouchableOpacity>
+
+                  {showMemoryDetails[message.id] && (
+                    <View style={styles.memoriesDetails}>
+                      {message.relevantMemories.map((memory, index) => (
+                        <Card key={memory.id} style={[styles.memoryCard, { backgroundColor: currentTheme.colors.surfaceVariant }]}>
+                          <Card.Content style={styles.memoryCardContent}>
+                            <View style={styles.memoryHeader}>
+                              <Text style={[styles.memoryTitle, { color: currentTheme.colors.text }]}>
+                                {memory.title || `Memory ${index + 1}`}
+                              </Text>
+                              <View style={styles.memoryMeta}>
+                                <Text style={[styles.similarityBadge, { 
+                                  backgroundColor: currentTheme.colors.primary + '1A',
+                                  color: currentTheme.colors.primary 
+                                }]}>
+                                  {Math.round(memory.similarity * 100)}% match
+                                </Text>
+                                <View style={[
+                                  styles.emotionBadge,
+                                  { backgroundColor: getEmotionColor(memory.emotion || 'neutral') }
+                                ]}>
+                                  <Text style={styles.emotionBadgeText}>
+                                    {memory.emotion || 'neutral'}
+                                  </Text>
+                                </View>
+                              </View>
+                            </View>
+                            <Text style={[styles.memoryDate, { color: currentTheme.colors.textSecondary }]}>
+                              {new Date(memory.created_at).toLocaleDateString()} • {memory.day_of_week}
+                            </Text>
+                            <Text style={[styles.memoryText, { color: currentTheme.colors.text }]} numberOfLines={3}>
+                              {memory.transcript}
+                            </Text>
+                          </Card.Content>
+                        </Card>
+                      ))}
+                    </View>
+                  )}
+                </View>
+              )}
+            </View>
+          ))
+        )}
+
+        {/* Processing indicator */}
+        {isProcessing && (
+          <View style={styles.processingContainer}>
+            <View style={[styles.processingBubble, { backgroundColor: currentTheme.colors.card }]}>
+              <ActivityIndicator size="small" color={currentTheme.colors.textSecondary} />
+              <Text style={[styles.processingText, { color: currentTheme.colors.textSecondary }]}>Thinking...</Text>
             </View>
           </View>
         )}
+      </ScrollView>
 
-        {/* No searchable memories message */}
-        {memories.length > 0 && memories.filter(m => m.embedding && m.embedding.length > 0).length === 0 && (
-          <View style={styles.noMemoriesContainer}>
-            <Text style={styles.noMemoriesTitle}>No Searchable Memories</Text>
-            <Text style={styles.noMemoriesText}>
-              Your existing memories need to be processed for semantic search. New memories will be automatically searchable.
-            </Text>
-          </View>
-        )}
-
-        {/* No memories at all */}
-        {memories.length === 0 && (
-          <View style={styles.noMemoriesContainer}>
-            <Text style={styles.noMemoriesTitle}>No Memories Yet</Text>
-            <Text style={styles.noMemoriesText}>
-              Start recording your thoughts and memories to use the AI-powered search feature.
-            </Text>
-          </View>
-        )}
+      {/* Input Section */}
+      <View style={[styles.inputSection, { backgroundColor: currentTheme.colors.card, borderTopColor: currentTheme.colors.border }]}>
+        <View style={styles.inputContainer}>
+          <TextInput
+            style={[styles.messageInput, { 
+              borderColor: currentTheme.colors.border, 
+              backgroundColor: currentTheme.colors.surfaceVariant,
+              color: currentTheme.colors.text
+            }]}
+            placeholder="Share what's on your mind..."
+            placeholderTextColor={currentTheme.colors.textSecondary}
+            value={inputMessage}
+            onChangeText={setInputMessage}
+            multiline={true}
+            onSubmitEditing={handleSendMessage}
+          />
+          <TouchableOpacity 
+            style={[styles.sendButton, { 
+              backgroundColor: currentTheme.colors.primary,
+              opacity: inputMessage.trim() ? 1 : 0.5 
+            }]}
+            onPress={handleSendMessage}
+            disabled={!inputMessage.trim() || isProcessing}
+          >
+            <IconButton icon="send" size={24} iconColor={currentTheme.colors.onPrimary} />
+          </TouchableOpacity>
+        </View>
       </View>
-    </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -419,6 +569,7 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
+    padding: 20,
   },
   headerSection: {
     padding: 24,
@@ -426,164 +577,206 @@ const styles = StyleSheet.create({
     backgroundColor: "#6200ee",
   },
   headerTitle: {
-    fontSize: 28,
+    fontSize: 24,
     fontWeight: "bold",
     color: "#fff",
-    marginBottom: 8,
+    marginBottom: 4,
   },
   headerSubtitle: {
-    fontSize: 16,
-    color: "rgba(255,255,255,0.8)",
-    lineHeight: 22,
-  },
-  searchSection: {
-    padding: 24,
-    backgroundColor: "#fff",
-    margin: 16,
-    borderRadius: 16,
-    elevation: 2,
-    minHeight: 400,
-  },
-  sectionTitle: {
-    fontSize: 22,
-    fontWeight: "bold",
-    color: "#333",
-    marginBottom: 8,
-  },
-  sectionSubtitle: {
     fontSize: 14,
-    color: "#666",
-    marginBottom: 16,
+    color: "rgba(255,255,255,0.8)",
   },
-  searchContainer: {
-    flexDirection: "row",
-    alignItems: "flex-end",
-    gap: 12,
-    marginBottom: 24,
-  },
-  searchInput: {
+  chatContainer: {
     flex: 1,
-    borderWidth: 2,
-    borderColor: "#e0e0e0",
-    borderRadius: 12,
-    padding: 16,
-    fontSize: 16,
-    maxHeight: 120,
-    textAlignVertical: "top",
-    backgroundColor: "#f8f9fa",
+    backgroundColor: "#f5f5f5",
   },
-  searchButton: {
-    backgroundColor: "#6200ee",
-    borderRadius: 12,
-    width: 56,
-    height: 56,
-    justifyContent: "center",
-    alignItems: "center",
+  chatContent: {
+    paddingVertical: 16,
+    paddingHorizontal: 16,
+  },
+  welcomeContainer: {
+    backgroundColor: "#fff",
+    padding: 24,
+    borderRadius: 16,
+    marginBottom: 20,
     elevation: 2,
   },
-  resultsContainer: {
-    marginTop: 8,
-  },
-  resultsTitle: {
-    fontSize: 18,
+  welcomeTitle: {
+    fontSize: 20,
     fontWeight: "bold",
     color: "#333",
+    marginBottom: 12,
+    textAlign: "center",
+  },
+  welcomeText: {
+    fontSize: 16,
+    color: "#666",
+    lineHeight: 24,
+    textAlign: "center",
+  },
+  messageWrapper: {
     marginBottom: 16,
   },
-  resultCard: {
-    backgroundColor: "#f8f9fa",
-    padding: 16,
-    borderRadius: 12,
-    marginBottom: 12,
-    borderLeftWidth: 4,
-    borderLeftColor: "#6200ee",
+  messageBubble: {
+    maxWidth: "80%",
+    padding: 12,
+    borderRadius: 18,
     elevation: 1,
   },
-  resultHeader: {
+  userMessage: {
+    backgroundColor: "#6200ee",
+    alignSelf: "flex-end",
+    marginLeft: "20%",
+  },
+  assistantMessage: {
+    backgroundColor: "#fff",
+    alignSelf: "flex-start",
+    marginRight: "20%",
+  },
+  messageText: {
+    fontSize: 16,
+    lineHeight: 22,
+  },
+  userMessageText: {
+    color: "#fff",
+  },
+  assistantMessageText: {
+    color: "#333",
+  },
+  messageTime: {
+    fontSize: 12,
+    marginTop: 6,
+  },
+  userMessageTime: {
+    color: "rgba(255,255,255,0.7)",
+  },
+  assistantMessageTime: {
+    color: "#888",
+  },
+  memoriesSection: {
+    marginTop: 8,
+    marginRight: "20%",
+  },
+  memoriesHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: "rgba(98, 0, 238, 0.05)",
+    padding: 8,
+    borderRadius: 8,
+  },
+  memoriesTitle: {
+    fontSize: 14,
+    color: "#6200ee",
+    fontWeight: "500",
+  },
+  memoriesDetails: {
+    marginTop: 4,
+  },
+  memoryCard: {
+    marginBottom: 6,
+    backgroundColor: "#f8f9fa",
+    elevation: 1,
+  },
+  memoryCardContent: {
+    padding: 12,
+  },
+  memoryHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "flex-start",
     marginBottom: 4,
   },
-  resultMeta: {
-    alignItems: "flex-end",
-    gap: 4,
-  },
-  similarityScore: {
-    fontSize: 11,
-    color: "#6200ee",
-    fontWeight: "bold",
-    backgroundColor: "rgba(98, 0, 238, 0.1)",
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 8,
-  },
-  resultTitle: {
-    fontSize: 16,
+  memoryTitle: {
+    fontSize: 14,
     fontWeight: "bold",
     color: "#333",
     flex: 1,
   },
-  resultEmotion: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 12,
+  memoryMeta: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
   },
-  resultEmotionText: {
+  similarityBadge: {
+    fontSize: 10,
+    color: "#6200ee",
+    backgroundColor: "rgba(98, 0, 238, 0.1)",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 10,
+    fontWeight: "bold",
+  },
+  emotionBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 10,
+  },
+  emotionBadgeText: {
+    fontSize: 10,
     color: "#fff",
-    fontSize: 12,
     fontWeight: "bold",
     textTransform: "capitalize",
   },
-  resultDate: {
+  memoryDate: {
     fontSize: 12,
     color: "#666",
-    marginBottom: 8,
+    marginBottom: 4,
   },
-  resultText: {
-    fontSize: 14,
-    color: "#444",
-    lineHeight: 20,
-    marginBottom: 8,
-  },
-  resultDuration: {
+  memoryText: {
     fontSize: 12,
-    color: "#888",
+    color: "#444",
+    lineHeight: 18,
+  },
+  processingContainer: {
+    alignItems: "flex-start",
+    marginBottom: 16,
+  },
+  processingBubble: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#fff",
+    padding: 12,
+    borderRadius: 18,
+    elevation: 1,
+    maxWidth: "80%",
+    marginRight: "20%",
+  },
+  processingText: {
+    fontSize: 16,
+    color: "#666",
+    marginLeft: 8,
     fontStyle: "italic",
   },
-  noMemoriesContainer: {
-    alignItems: "center",
-    paddingVertical: 40,
-  },
-  noMemoriesTitle: {
-    fontSize: 20,
-    fontWeight: "bold",
-    color: "#333",
-    marginBottom: 8,
-  },
-  noMemoriesText: {
-    fontSize: 14,
-    color: "#666",
-    textAlign: "center",
-    lineHeight: 20,
-  },
-  searchExplanation: {
-    marginTop: 20,
+  inputSection: {
+    backgroundColor: "#fff",
     padding: 16,
-    backgroundColor: "#f0f0f0",
-    borderRadius: 8,
-    borderLeftWidth: 4,
-    borderLeftColor: "#6200ee",
+    borderTopWidth: 1,
+    borderTopColor: "#e0e0e0",
   },
-  explanationTitle: {
-    fontSize: 14,
-    fontWeight: "bold",
-    color: "#333",
-    marginBottom: 8,
+  inputContainer: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: 12,
   },
-  explanationText: {
-    fontSize: 12,
-    color: "#666",
-    lineHeight: 18,
+  messageInput: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: "#e0e0e0",
+    borderRadius: 20,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    fontSize: 16,
+    maxHeight: 100,
+    backgroundColor: "#f8f9fa",
+  },
+  sendButton: {
+    backgroundColor: "#6200ee",
+    borderRadius: 24,
+    width: 48,
+    height: 48,
+    justifyContent: "center",
+    alignItems: "center",
+    elevation: 2,
   },
 });

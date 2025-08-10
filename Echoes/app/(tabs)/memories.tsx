@@ -15,6 +15,7 @@ import {
   RectButton,
   GestureHandlerRootView,
 } from "react-native-gesture-handler";
+import { useTheme } from "../../contexts/ThemeContext";
 
 const { width, height } = Dimensions.get("window");
 
@@ -37,6 +38,8 @@ export default function MemoriesScreen() {
   const [selectedMemory, setSelectedMemory] = useState<Memory | null>(null);
   const [modalVisible, setModalVisible] = useState(false);
   const [isSummarizing, setIsSummarizing] = useState(false);
+  
+  const { currentTheme } = useTheme();
 
   /** Fetch all memories for the current signed-in user */
   const fetchTranscripts = useCallback(async () => {
@@ -152,11 +155,10 @@ export default function MemoriesScreen() {
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <View style={styles.pageContainer}>
+      <View style={[styles.pageContainer, { backgroundColor: currentTheme.colors.background }]}>
         {/* Header */}
-        <View style={styles.headerWrapper}>
-          <Text style={styles.pageTitle}>Your Memories</Text>
-          <View style={styles.headerLine} />
+        <View style={[styles.headerWrapper, { backgroundColor: currentTheme.colors.primary }]}>
+          <Text style={[styles.pageTitle, { color: currentTheme.colors.onPrimary }]}>Your Memories</Text>
         </View>
 
         {/* List */}
@@ -170,8 +172,8 @@ export default function MemoriesScreen() {
           <View style={styles.centeredList}>
             {transcripts.length === 0 ? (
               <View style={styles.centered}>
-                <Text variant="headlineMedium">Memories</Text>
-                <Text>Your saved memories will appear here.</Text>
+                <Text variant="headlineMedium" style={{ color: currentTheme.colors.text }}>Memories</Text>
+                <Text style={{ color: currentTheme.colors.textSecondary }}>Your saved memories will appear here.</Text>
               </View>
             ) : (
               transcripts.map((memory, idx) => (
@@ -183,13 +185,16 @@ export default function MemoriesScreen() {
                   animationOptions={{ duration: 320 }}
                 >
                   <TouchableOpacity
-                    style={styles.memoryCard}
+                    style={[styles.memoryCard, { 
+                      backgroundColor: currentTheme.colors.card, 
+                      borderColor: currentTheme.colors.border 
+                    }]}
                     onPress={() => openMemoryModal(memory)}
                     activeOpacity={0.7}
                   >
                     <View style={styles.cardHeader}>
                       <View style={styles.titleRow}>
-                        <Text style={styles.memoryTitle}>
+                        <Text style={[styles.memoryTitle, { color: currentTheme.colors.text }]}>
                           {memory.title || "Memory"}
                         </Text>
                         <View style={[
@@ -203,11 +208,11 @@ export default function MemoriesScreen() {
                       </View>
 
                       <View style={styles.metaRow}>
-                        <Text style={styles.dateText}>
+                        <Text style={[styles.dateText, { color: currentTheme.colors.textSecondary }]}>
                           {new Date(memory.created_at).toLocaleDateString()} • {memory.day_of_week}
                         </Text>
                         {memory.duration && (
-                          <Text style={styles.durationText}>
+                          <Text style={[styles.durationText, { color: currentTheme.colors.textSecondary }]}>
                             {formatDuration(memory.duration)}
                           </Text>
                         )}
@@ -228,26 +233,26 @@ export default function MemoriesScreen() {
           onRequestClose={closeMemoryModal}
         >
           <View style={styles.modalOverlay}>
-            <View style={styles.modalContent}>
+            <View style={[styles.modalContent, { backgroundColor: currentTheme.colors.card }]}>
               {selectedMemory && (
                 <>
                   {/* Modal Header */}
-                  <View style={styles.modalHeader}>
+                  <View style={[styles.modalHeader, { borderBottomColor: currentTheme.colors.border }]}>
                     <View style={styles.modalTitleRow}>
-                      <Text style={styles.modalTitle}>
+                      <Text style={[styles.modalTitle, { color: currentTheme.colors.text }]}>
                         {selectedMemory.title || "Memory"}
                       </Text>
                       <TouchableOpacity onPress={closeMemoryModal}>
-                        <IconButton icon="close" size={24} />
+                        <IconButton icon="close" size={24} iconColor={currentTheme.colors.textSecondary} />
                       </TouchableOpacity>
                     </View>
 
                     <View style={styles.modalMeta}>
-                      <Text style={styles.modalDate}>
+                      <Text style={[styles.modalDate, { color: currentTheme.colors.textSecondary }]}>
                         {new Date(selectedMemory.created_at).toLocaleDateString()} • {selectedMemory.day_of_week}
                       </Text>
                       {selectedMemory.duration && (
-                        <Text style={styles.modalDuration}>
+                        <Text style={[styles.modalDuration, { color: currentTheme.colors.textSecondary }]}>
                           Duration: {formatDuration(selectedMemory.duration)}
                         </Text>
                       )}
@@ -266,15 +271,15 @@ export default function MemoriesScreen() {
                   {/* Modal Body */}
                   <ScrollView style={styles.modalBody} showsVerticalScrollIndicator={false}>
                     <View style={styles.section}>
-                      <Text style={styles.sectionTitle}>Summary</Text>
-                      <Text style={styles.sectionText}>
+                      <Text style={[styles.sectionTitle, { color: currentTheme.colors.text }]}>Summary</Text>
+                      <Text style={[styles.sectionText, { color: currentTheme.colors.textSecondary }]}>
                         {selectedMemory.summary || "No summary available"}
                       </Text>
                     </View>
 
                     <View style={styles.section}>
-                      <Text style={styles.sectionTitle}>Transcript</Text>
-                      <Text style={styles.sectionText}>
+                      <Text style={[styles.sectionTitle, { color: currentTheme.colors.text }]}>Transcript</Text>
+                      <Text style={[styles.sectionText, { color: currentTheme.colors.textSecondary }]}>
                         {selectedMemory.transcript}
                       </Text>
                     </View>
@@ -294,25 +299,17 @@ export default function MemoriesScreen() {
 const styles = StyleSheet.create({
   pageContainer: {
     flex: 1,
-    backgroundColor: "#f5f5f5",
-    paddingTop: 40,
   },
   headerWrapper: {
     paddingHorizontal: 24,
-    marginTop: 32,
+    paddingTop: 60,
     marginBottom: 8,
+    paddingBottom: 16,
   },
   pageTitle: {
     fontSize: 28,
     fontWeight: "bold",
-    color: "#333",
     marginBottom: 8,
-  },
-  headerLine: {
-    height: 1,
-    backgroundColor: "#e0e0e0",
-    width: "100%",
-    marginBottom: 16,
   },
   scrollContainer: {
     paddingBottom: 32,
@@ -331,11 +328,9 @@ const styles = StyleSheet.create({
   },
   memoryCard: {
     marginBottom: 8,
-    backgroundColor: "#fff",
     borderRadius: 10,
     elevation: 2,
     borderWidth: 1,
-    borderColor: "#ececec",
     overflow: "hidden",
   },
   cardHeader: {
@@ -350,7 +345,6 @@ const styles = StyleSheet.create({
   memoryTitle: {
     fontSize: 18,
     fontWeight: "bold",
-    color: "#333",
     flex: 1,
   },
   emotionTag: {
@@ -368,11 +362,9 @@ const styles = StyleSheet.create({
   },
   dateText: {
     fontSize: 12,
-    color: "#888",
   },
   durationText: {
     fontSize: 12,
-    color: "#888",
   },
   deleteButton: {
     backgroundColor: "#ff5252",
@@ -394,7 +386,6 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.5)",
   },
   modalContent: {
-    backgroundColor: "#fff",
     borderRadius: 10,
     width: "90%",
     maxHeight: "80%",
@@ -403,7 +394,6 @@ const styles = StyleSheet.create({
   modalHeader: {
     padding: 16,
     borderBottomWidth: 1,
-    borderBottomColor: "#eee",
   },
   modalTitleRow: {
     flexDirection: "row",
@@ -414,7 +404,6 @@ const styles = StyleSheet.create({
   modalTitle: {
     fontSize: 22,
     fontWeight: "bold",
-    color: "#333",
   },
   modalMeta: {
     flexDirection: "row",
@@ -424,11 +413,9 @@ const styles = StyleSheet.create({
   },
   modalDate: {
     fontSize: 14,
-    color: "#888",
   },
   modalDuration: {
     fontSize: 14,
-    color: "#888",
   },
   modalEmotionTag: {
     paddingVertical: 4,
@@ -448,12 +435,10 @@ const styles = StyleSheet.create({
   sectionTitle: {
     fontWeight: "bold",
     fontSize: 16,
-    color: "#333",
     marginBottom: 8,
   },
   sectionText: {
     fontSize: 14,
     lineHeight: 22,
-    color: "#444",
   },
 });

@@ -15,3 +15,6 @@ npm install weaviate-ts-client
 npm install axios
 npx expo install expo-av expo-speech expo-linear-gradient
 npm install react-native-gesture-handler
+npm install @google/generative-ai
+<!--npm install @react-native-async-storage/async-storage!-->
+npx expo install @react-native-async-storage/async-storage

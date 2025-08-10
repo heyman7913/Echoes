@@ -15,7 +15,7 @@ export default function LoginScreen() {
     setLoading(true);
     setError("");
 
-    const { error } = await supabase.auth.signInWithPassword({
+    const { data, error } = await supabase.auth.signInWithPassword({
       email,
       password,
     });
@@ -23,8 +23,14 @@ export default function LoginScreen() {
     if (error) {
       setError(error.message);
     } else {
-      // Redirect to memories tab after successful login
-      router.replace("/(tabs)/memories");
+      // Check if user needs to change password
+      const mustChangePassword = data.user?.user_metadata?.must_change_password;
+      
+      if (mustChangePassword) {
+        router.replace("/(auth)/set-new-password");
+      } else {
+        router.replace("/(tabs)/memories");
+      }
     }
 
     setLoading(false);

@@ -13,6 +13,7 @@ import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { Audio } from "expo-av";
 import { supabase } from "../../supabase/client";
 import { LinearGradient } from "expo-linear-gradient";
+import { useTheme } from "../../contexts/ThemeContext";
 
 const { width } = Dimensions.get("window");
 
@@ -33,6 +34,8 @@ export default function RecordScreen() {
 
   const [audioLevels, setAudioLevels] = useState<number[]>(Array(32).fill(0));
   const audioAnalysisInterval = useRef<number | null>(null);
+  
+  const { currentTheme } = useTheme();
 
   useEffect(() => {
     (async () => {
@@ -416,7 +419,10 @@ export default function RecordScreen() {
             key={i}
             style={[
               styles.waveformBar,
-              { height: h, backgroundColor: `rgba(98,0,238,${o})` },
+              { 
+                height: h, 
+                backgroundColor: `rgba(${currentTheme.colors.primary.replace('#', '').match(/.{1,2}/g)?.map(hex => parseInt(hex, 16)).join(',') || '98,0,238'},${o})` 
+              },
             ]}
           />
         );
@@ -425,8 +431,8 @@ export default function RecordScreen() {
   );
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.headerText}>Record Now</Text>
+    <View style={[styles.container, { backgroundColor: currentTheme.colors.background }]}>
+      <Text style={[styles.headerText, { color: currentTheme.colors.text }]}>Record Now</Text>
 
       <View style={styles.recordingContainer}>
         <TouchableOpacity
@@ -463,7 +469,7 @@ export default function RecordScreen() {
               colors={
                 isRecording
                   ? ["#ff6b6b", "#ee5a52", "#ff4444"]
-                  : ["#667eea", "#764ba2", "#6200ee"]
+                  : [currentTheme.colors.primary, currentTheme.colors.primaryVariant, currentTheme.colors.primary]
               }
               style={styles.gradient}
             >
@@ -480,8 +486,8 @@ export default function RecordScreen() {
       <View style={styles.waveformWrapper}>{renderWaveform()}</View>
 
       <View style={styles.timerContainer}>
-        <Text style={styles.timerText}>{formatTime(recordingTime)}</Text>
-        <Text style={styles.timerLabel}>
+        <Text style={[styles.timerText, { color: currentTheme.colors.text }]}>{formatTime(recordingTime)}</Text>
+        <Text style={[styles.timerLabel, { color: currentTheme.colors.textSecondary }]}>
           {isRecording
             ? isPaused
               ? "Paused"
@@ -493,7 +499,7 @@ export default function RecordScreen() {
       {isRecording && (
         <View style={styles.controlButtonsContainer}>
           <TouchableOpacity
-            style={[styles.controlButton, styles.pauseButton]}
+            style={[styles.controlButton, styles.pauseButton, { backgroundColor: currentTheme.colors.primary }]}
             onPress={pauseRecording}
           >
             <MaterialCommunityIcons
@@ -516,13 +522,13 @@ export default function RecordScreen() {
       )}
 
       {isProcessing && (
-        <Text style={styles.processingText}>Processing audio...</Text>
+        <Text style={[styles.processingText, { color: currentTheme.colors.textSecondary }]}>Processing audio...</Text>
       )}
 
       {transcript !== "" && (
-        <View style={styles.transcriptContainer}>
+        <View style={[styles.transcriptContainer, { backgroundColor: currentTheme.colors.card }]}>
           <View style={styles.transcriptHeader}>
-            <Text style={styles.transcriptTitle}>Transcript:</Text>
+            <Text style={[styles.transcriptTitle, { color: currentTheme.colors.text }]}>Transcript:</Text>
             <TouchableOpacity
               style={styles.minimizeButton}
               onPress={() => setShowTranscript(!showTranscript)}
@@ -530,7 +536,7 @@ export default function RecordScreen() {
               <MaterialCommunityIcons
                 name={showTranscript ? "chevron-up" : "chevron-down"}
                 size={24}
-                color="#6200ee"
+                color={currentTheme.colors.primary}
               />
             </TouchableOpacity>
           </View>
@@ -541,22 +547,22 @@ export default function RecordScreen() {
               showsVerticalScrollIndicator={true}
               nestedScrollEnabled={true}
             >
-              <Text style={styles.transcriptText}>{transcript}</Text>
+              <Text style={[styles.transcriptText, { color: currentTheme.colors.textSecondary }]}>{transcript}</Text>
             </ScrollView>
           )}
           
           <View style={styles.actionRow}>
             <TouchableOpacity
-              style={styles.saveButton}
+              style={[styles.saveButton, { backgroundColor: currentTheme.colors.primary }]}
               onPress={() => saveToSupabase(transcript)}
             >
               <Text style={styles.saveButtonText}>Save</Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={styles.discardButton}
+              style={[styles.discardButton, { backgroundColor: currentTheme.colors.surfaceVariant }]}
               onPress={() => setTranscript("")}
             >
-              <Text style={styles.discardButtonText}>Discard</Text>
+              <Text style={[styles.discardButtonText, { color: currentTheme.colors.primary }]}>Discard</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -568,7 +574,6 @@ export default function RecordScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#f5f5f5",
     padding: 20,
     alignItems: "center",
     justifyContent: "center",
@@ -576,7 +581,6 @@ const styles = StyleSheet.create({
   headerText: {
     fontSize: 28,
     fontWeight: "bold",
-    color: "#333",
     marginBottom: 40,
     textAlign: "center",
   },
@@ -635,12 +639,10 @@ const styles = StyleSheet.create({
   timerText: {
     fontSize: 48,
     fontWeight: "bold",
-    color: "#333",
     fontFamily: "monospace",
   },
   timerLabel: {
     fontSize: 16,
-    color: "#666",
     marginTop: 5,
   },
   controlButtonsContainer: {
@@ -663,7 +665,7 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
   },
   pauseButton: {
-    backgroundColor: "#6200ee",
+    // backgroundColor will be set dynamically
   },
   stopButton: {
     backgroundColor: "#ff4444",
@@ -676,14 +678,12 @@ const styles = StyleSheet.create({
   },
   processingText: {
     fontSize: 16,
-    color: "#666",
     fontStyle: "italic",
     marginBottom: 30,
   },
   transcriptContainer: {
     width: "100%",
     maxWidth: 500,
-    backgroundColor: "white",
     borderRadius: 10,
     padding: 20,
     alignItems: "center",
@@ -710,11 +710,9 @@ const styles = StyleSheet.create({
   transcriptTitle: {
     fontSize: 18,
     fontWeight: "bold",
-    color: "#333",
   },
   transcriptText: {
     fontSize: 14,
-    color: "#666",
     lineHeight: 20,
     textAlign: "center",
     marginBottom: 20,
@@ -726,7 +724,7 @@ const styles = StyleSheet.create({
     width: "100%",
   },
   saveButton: {
-    backgroundColor: "#6200ee",
+    // backgroundColor will be set dynamically
     paddingVertical: 12,
     paddingHorizontal: 20,
     borderRadius: 8,
@@ -736,13 +734,13 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
   },
   discardButton: {
-    backgroundColor: "#eee",
+    // backgroundColor will be set dynamically
     paddingVertical: 12,
     paddingHorizontal: 20,
     borderRadius: 8,
   },
   discardButtonText: {
-    color: "#6200ee",
+    // color will be set dynamically
     fontWeight: "bold",
   }
 });
