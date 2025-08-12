@@ -41,6 +41,68 @@ export default function MemoriesScreen() {
   
   const { currentTheme } = useTheme();
 
+  const generateTitleFromSummary = useCallback((summary: string): string => {
+    if (!summary || summary.trim().length === 0) {
+      return "Memory";
+    }
+
+    try {
+      // Remove common words and punctuation
+      const stopWords = ['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'am', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'can', 'about', 'today', 'really', 'very', 'much', 'been', 'feel', 'feeling', 'felt'];
+      
+      // Clean and split text
+      const words = summary
+        .toLowerCase()
+        .replace(/[^\w\s]/g, ' ') // Replace punctuation with spaces
+        .split(/\s+/)
+        .filter(word => 
+          word.length > 2 && 
+          !stopWords.includes(word) &&
+          !/^\d+$/.test(word) // Remove pure numbers
+        );
+
+      // Find meaningful words - prioritize nouns and descriptive words
+      const meaningfulWords = words.filter(word => {
+        // Keep words that are likely nouns or important adjectives
+        const nounIndicators = ['work', 'family', 'friend', 'home', 'life', 'day', 'time', 'talk', 'conversation', 'meeting', 'call', 'project', 'problem', 'issue', 'stress', 'anxiety', 'happy', 'sad', 'angry', 'excited', 'worried', 'love', 'hate', 'job', 'career', 'health', 'doctor', 'hospital', 'school', 'university', 'travel', 'vacation', 'money', 'relationship', 'marriage', 'children', 'kids', 'parent', 'mother', 'father', 'brother', 'sister'];
+        const emotionWords = ['happy', 'sad', 'angry', 'excited', 'anxious', 'worried', 'stressed', 'calm', 'peaceful', 'frustrated', 'disappointed', 'grateful', 'proud', 'scared', 'nervous', 'confident'];
+        
+        return word.length > 3 || nounIndicators.includes(word) || emotionWords.includes(word);
+      });
+
+      let titleWords = [];
+      
+      // Use meaningful words if available
+      if (meaningfulWords.length >= 2) {
+        titleWords = meaningfulWords.slice(0, 3);
+      } else if (meaningfulWords.length === 1) {
+        titleWords = [meaningfulWords[0], ...words.slice(0, 2)].slice(0, 3);
+      } else {
+        // Fallback to first few words
+        titleWords = words.slice(0, 3);
+      }
+      
+      // Create title
+      let title = titleWords
+        .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+        .join(' ')
+        .trim();
+      
+      // Ensure reasonable length
+      if (title.length > 25) {
+        title = title.substring(0, 22) + '...';
+      }
+      
+      return title || "Memory";
+      
+    } catch (error) {
+      console.error("Error generating title:", error);
+      // Simple fallback
+      const firstWords = summary.split(' ').slice(0, 3).join(' ');
+      return firstWords.length > 25 ? firstWords.substring(0, 22) + '...' : firstWords || "Memory";
+    }
+  }, []);
+
   const summarizeWithGemini = useCallback(async (text: string): Promise<string | null> => {
     try {
       const apiKey = process.env.EXPO_PUBLIC_GOOGLE_API_KEY;
@@ -58,7 +120,7 @@ export default function MemoriesScreen() {
                 parts: [
                   {
                     text:
-                      "Summarize the following diary-style transcript into 2-3 calm, compassionate sentences capturing the main feelings and topics. Avoid advice.\n\nTranscript:\n" +
+                      "Summarize the following diary-style transcript into 2-3 calm, compassionate sentences capturing the main feelings and topics. Don't address the writer. Avoid advice.\n\nTranscript:\n" +
                       text,
                   },
                 ],
@@ -78,23 +140,38 @@ export default function MemoriesScreen() {
   const ensureSummaries = useCallback(async (mems: Memory[]) => {
     const toSummarize = mems.filter(m => !m.summary || m.summary.trim().length === 0);
     if (toSummarize.length === 0) return;
+    
     setIsSummarizing(true);
     try {
       for (const m of toSummarize) {
         const summary = await summarizeWithGemini(m.transcript);
         if (summary) {
-          // update DB
-          await supabase.from('memories').update({ summary }).eq('id', m.id);
-          // update local state
-          setTranscripts(prev => prev.map(p => (p.id === m.id ? { ...p, summary } : p)));
-          // if currently selected, update modal too
-          setSelectedMemory(prev => (prev && prev.id === m.id ? { ...prev, summary } as Memory : prev));
+          // Generate title from summary using Wink NLP
+          const nlpTitle = generateTitleFromSummary(summary);
+          
+          // Update DB with both summary and NLP-generated title
+          await supabase.from('memories').update({ 
+            summary,
+            title: nlpTitle 
+          }).eq('id', m.id);
+          
+          // Update local state
+          setTranscripts(prev => prev.map(p => (
+            p.id === m.id ? { ...p, summary, title: nlpTitle } : p
+          )));
+          
+          // If currently selected, update modal too
+          setSelectedMemory(prev => (
+            prev && prev.id === m.id 
+              ? { ...prev, summary, title: nlpTitle } as Memory 
+              : prev
+          ));
         }
       }
     } finally {
       setIsSummarizing(false);
     }
-  }, [summarizeWithGemini]);
+  }, [summarizeWithGemini, generateTitleFromSummary]);
 
   /** Fetch all memories for the current signed-in user */
   const fetchTranscripts = useCallback(async () => {
@@ -260,7 +337,7 @@ export default function MemoriesScreen() {
                     <View style={styles.cardHeader}>
                       <View style={styles.titleRow}>
                         <Text style={[styles.memoryTitle, { color: currentTheme.colors.text }]}>
-                          {memory.title || "Memory"}
+                          {memory.title || `Memory from ${new Date(memory.created_at).toLocaleDateString()}`}
                         </Text>
                         <View style={[
                           styles.emotionTag,
@@ -305,7 +382,7 @@ export default function MemoriesScreen() {
                   <View style={[styles.modalHeader, { borderBottomColor: currentTheme.colors.border }]}>
                     <View style={styles.modalTitleRow}>
                       <Text style={[styles.modalTitle, { color: currentTheme.colors.text }]}>
-                        {selectedMemory.title || "Memory"}
+                        {selectedMemory.title || `Memory from ${new Date(selectedMemory.created_at).toLocaleDateString()}`}
                       </Text>
                       <TouchableOpacity onPress={closeMemoryModal}>
                         <IconButton icon="close" size={24} iconColor={currentTheme.colors.textSecondary} />

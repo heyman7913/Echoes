@@ -271,7 +271,7 @@ export default function TherapistScreen() {
     }
   };
 
-  /** Generate therapist response using Gemini with RAG */
+  /** Generate therapist response using Gemini with RAG and conversation context */
   const generateTherapistResponse = async (userMessage: string, relevantMemories: MemoryWithSimilarity[]): Promise<string> => {
     try {
       const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
@@ -279,47 +279,76 @@ export default function TherapistScreen() {
       // Build context from relevant memories
       let memoryContext = "";
       if (relevantMemories.length > 0) {
-        memoryContext = "\n\nRelevant memories from the user:\n";
+        memoryContext = "Relevant past memories:\n";
         relevantMemories.forEach((memory, index) => {
-          memoryContext += `\nMemory ${index + 1} (${Math.round(memory.similarity * 100)}% relevant):\n`;
-          memoryContext += `Date: ${new Date(memory.created_at).toLocaleDateString()}\n`;
-          memoryContext += `Emotion: ${memory.emotion || 'neutral'}\n`;
-          memoryContext += `Content: ${memory.transcript}\n`;
+          memoryContext += `${new Date(memory.created_at).toLocaleDateString()}: ${memory.transcript}\n`;
           if (memory.summary) {
-            memoryContext += `Summary: ${memory.summary}\n`;
+            memoryContext += `(${memory.summary})\n`;
           }
+          memoryContext += "\n";
         });
       }
 
-      const systemPrompt = `You are a compassionate, professional AI therapist. Your role is to provide supportive, empathetic responses that help users process their thoughts and emotions. 
+      // Build conversation history for context
+      const recentMessages = chatMessages.slice(-6); // Last 6 messages for context
+      let conversationHistory = "";
+      if (recentMessages.length > 0) {
+        conversationHistory = "Recent conversation:\n";
+        recentMessages.forEach((msg) => {
+          conversationHistory += `${msg.role === 'user' ? 'User' : 'You'}: ${msg.content}\n`;
+        });
+        conversationHistory += "\n";
+      }
 
-Key guidelines:
-- Be warm, understanding, and non-judgmental
-- Ask thoughtful questions to help users explore their feelings
-- Provide gentle insights and coping strategies when appropriate
-- Reference their memories naturally when relevant to show you understand their journey
-- Maintain professional boundaries - you're supportive but not a replacement for professional therapy
-- Keep responses concise but meaningful
-- Focus on emotional support, validation, and gentle guidance
+      const systemPrompt = `You are an experienced therapist having a natural conversation. You remember what's been discussed and build on it organically.
 
-The user has shared memories with you over time. Use these memories to provide more personalized, contextual support.${memoryContext}
+${memoryContext}${conversationHistory}
 
-Current conversation context: The user is reaching out for support and guidance.`;
+Be genuinely human in your responses - no rigid formats or clinical templates. Respond as you would in person: sometimes with just empathy, sometimes with insights, sometimes with gentle questions. Let the conversation flow naturally.
+
+Key principles:
+- Remember and reference what we've already talked about
+- Speak naturally, not like a chatbot following a script
+- Only give advice when it feels right, not because you think you should
+- Ask questions because you're genuinely curious, not to fill a template - but do not overdo it
+- Wherever needed, help the user process and reflect on their feelings
+- Sometimes just listening and reflecting is enough
+- Be real about the therapeutic relationship - you care, but you're not their friend
+- Vary your response style - don't always end with questions
+
+Trust your therapeutic instincts and respond authentically to what they're sharing.`;
+
+      // Build the full conversation context for Gemini
+      const conversationContents = [
+        {
+          role: "user",
+          parts: [{ text: systemPrompt }]
+        }
+      ];
+
+      // Add recent conversation history to the model context
+      recentMessages.forEach((msg) => {
+        conversationContents.push({
+          role: msg.role === 'user' ? 'user' : 'model',
+          parts: [{ text: msg.content }]
+        });
+      });
+
+      // Add current message
+      conversationContents.push({
+        role: "user",
+        parts: [{ text: userMessage }]
+      });
 
       const result = await model.generateContent({
-        contents: [
-          {
-            role: "user",
-            parts: [{ text: systemPrompt + "\n\nUser message: " + userMessage }]
-          }
-        ],
+        contents: conversationContents,
       });
 
       const response = await result.response;
       return response.text();
     } catch (error) {
       console.error("Error generating response:", error);
-      return "I apologize, but I'm having trouble processing your message right now. Please try again in a moment. Remember, I'm here to support you.";
+      return "I'm having some technical difficulties right now. Can we try that again in a moment?";
     }
   };
 
